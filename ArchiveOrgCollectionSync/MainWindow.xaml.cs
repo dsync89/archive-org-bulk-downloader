@@ -837,6 +837,12 @@
             this.logEntries.Clear();
         }
 
+        private void Hyperlink_RequestNavigate(object sender, System.Windows.Navigation.RequestNavigateEventArgs e)
+        {
+            MainWindow.OpenWithShell(e.Uri.AbsoluteUri);
+            e.Handled = true;
+        }
+
         private void Window_Closing(object sender, CancelEventArgs e)
         {
             this.SaveSettings();

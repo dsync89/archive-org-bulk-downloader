@@ -6,12 +6,12 @@
     <Nullable>enable</Nullable>
     <UseWPF>true</UseWPF>
     <Company>Unbroken Software, LLC</Company>
-    <Authors>Unbroken Software, LLC</Authors>
+    <Authors>dsync89; Unbroken Software, LLC</Authors>
     <Product>Archive.org Bulk Downloader</Product>
-    <Copyright>Copyright © Unbroken Software, LLC 2023</Copyright>
-    <RepositoryUrl>https://github.com/jasonunbrokensoftware/ArchiveOrgCollectionSync</RepositoryUrl>
+    <Copyright>Copyright © dsync89 2026; Copyright © Unbroken Software, LLC 2023</Copyright>
+    <RepositoryUrl>https://github.com/dsync89/archive-org-bulk-downloader</RepositoryUrl>
     <NeutralLanguage>en-US</NeutralLanguage>
-    <Version>1.3.0</Version>
+    <Version>1.3.1</Version>
     <!-- .NET 6 is end-of-life; let the app run on whichever newer desktop runtime is installed. -->
     <RollForward>Major</RollForward>
   </PropertyGroup>
