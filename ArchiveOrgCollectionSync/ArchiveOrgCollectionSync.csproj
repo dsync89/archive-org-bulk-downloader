@@ -11,6 +11,7 @@
     <Copyright>Copyright © Unbroken Software, LLC 2023</Copyright>
     <RepositoryUrl>https://github.com/jasonunbrokensoftware/ArchiveOrgCollectionSync</RepositoryUrl>
     <NeutralLanguage>en-US</NeutralLanguage>
+    <Version>1.3.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
@@ -35,9 +36,6 @@
     <Compile Update="MainWindow.xaml.cs">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Update="PatientWebClient.cs">
-      <SubType>Component</SubType>
-    </Compile>
   </ItemGroup>
 
   <ItemGroup>
@@ -48,5 +46,15 @@
       <SubType>Designer</SubType>
     </Page>
   </ItemGroup>
+
+  <!-- Stamp the short git commit into the informational version (shown on the About tab) so it's obvious which build is running. -->
+  <Target Name="SetSourceRevisionId" BeforeTargets="GetAssemblyVersion" Condition="'$(SourceRevisionId)' == ''">
+    <Exec Command="git rev-parse --short=7 HEAD" ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="low" ContinueOnError="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="SourceRevisionId" />
+    </Exec>
+    <PropertyGroup>
+      <SourceRevisionId Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(SourceRevisionId)', '^[0-9a-f]{7,40}$'))" />
+    </PropertyGroup>
+  </Target>
 
 </Project>
