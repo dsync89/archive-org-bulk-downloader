@@ -1,0 +1,72 @@
+name: Release
+
+# Push a tag like v1.3.1 (matching <Version> in the csproj) to build the exe and publish a GitHub release.
+# Run manually with an existing tag to rebuild and re-upload its assets.
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build, e.g. v1.3.1
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Check the tag matches the csproj version
+        shell: pwsh
+        run: |
+          $version = $env:TAG.TrimStart('v')
+          [xml]$proj = Get-Content ArchiveOrgCollectionSync/ArchiveOrgCollectionSync.csproj
+          $projVersion = @($proj.Project.PropertyGroup.Version | Where-Object { $_ })[0]
+          if ($projVersion -ne $version) { throw "csproj <Version> is '$projVersion' but the tag is '$env:TAG'. Bump the csproj first." }
+          "VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Publish single-file exe
+        run: dotnet publish ArchiveOrgCollectionSync/ArchiveOrgCollectionSync.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o publish
+
+      - name: Package and checksum
+        shell: pwsh
+        run: |
+          $name = "ArchiveOrgBulkDownloader-$env:VERSION-win-x64.exe"
+          Move-Item publish/ArchiveOrgCollectionSync.exe $name
+          $hash = (Get-FileHash $name -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content "$name.sha256" "$hash  $name" -Encoding ascii
+          "ASSET=$name" >> $env:GITHUB_ENV
+          "SHA256=$hash" >> $env:GITHUB_ENV
+
+      - name: Create or update the GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $notes = @(
+            "**Download:** ``$env:ASSET`` is a single exe with no installer. It needs the [.NET Desktop Runtime](https://dotnet.microsoft.com/download) 6.0 or newer (8.0 and 9.0 work).",
+            "",
+            "SHA-256: ``$env:SHA256``",
+            "",
+            "Built by GitHub Actions from ``$env:TAG`` ($env:GITHUB_SHA)."
+          ) -join "`n"
+
+          gh release view $env:TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:TAG $env:ASSET "$env:ASSET.sha256" --clobber
+          } else {
+            gh release create $env:TAG $env:ASSET "$env:ASSET.sha256" --verify-tag --title "Archive.org Bulk Downloader $env:VERSION" --notes $notes --generate-notes
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -1,5 +1,9 @@
 # Archive.org Bulk Downloader: download entire Internet Archive collections, fast and resumable
 
+[![Build](https://github.com/dsync89/archive-org-bulk-downloader/actions/workflows/build.yml/badge.svg)](https://github.com/dsync89/archive-org-bulk-downloader/actions/workflows/build.yml)
+[![Latest release](https://img.shields.io/github/v/release/dsync89/archive-org-bulk-downloader)](https://github.com/dsync89/archive-org-bulk-downloader/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/dsync89/archive-org-bulk-downloader/total)](https://github.com/dsync89/archive-org-bulk-downloader/releases)
+
 **Archive.org Bulk Downloader** is a free, open-source Windows app (GUI, no command line). It downloads and syncs whole
 **archive.org / Internet Archive** collections and items to a local folder:
 - **parallel downloads**, with several files at once and several connections per file;
@@ -164,6 +168,19 @@ dotnet publish ArchiveOrgCollectionSync/ArchiveOrgCollectionSync.csproj -c Relea
 
 The About tab shows the version and the git commit it was built from, e.g. `1.3.0 (fe76d11)`.
 
+### Releases (GitHub Actions)
+
+- Every push and pull request to `main` is built by the [Build workflow](.github/workflows/build.yml). The exe is
+  kept as a workflow artifact for 14 days.
+- To release:
+  1. Bump `<Version>` in `ArchiveOrgCollectionSync.csproj`.
+  2. Merge to `main`.
+  3. Push a matching tag, e.g. `git tag -a v1.3.1 -m "1.3.1" && git push origin v1.3.1`.
+- The [Release workflow](.github/workflows/release.yml) then:
+  1. checks that the tag matches the csproj version;
+  2. builds `ArchiveOrgBulkDownloader-<version>-win-x64.exe` on `windows-latest`, plus a `.sha256` file;
+  3. publishes the GitHub release with generated notes.
+
 ## Credits
 
 - **Original app:** [Archive.org Collection Sync](https://github.com/jasonunbrokensoftware/ArchiveOrgCollectionSync)
@@ -177,6 +194,9 @@ The About tab shows the version and the git commit it was built from, e.g. `1.3.
 
 ## License
 
-MIT License, unchanged from upstream. See [LICENSE](LICENSE). Copyright (c) Unbroken Software, LLC.
+MIT License. See [LICENSE](LICENSE).
+
+- Copyright (c) 2026 dsync89, for the Archive.org Bulk Downloader modifications.
+- Copyright (c) 2022–2023 Unbroken Software, LLC, for the original Archive.org Collection Sync.
 
 <!-- Keywords: archive.org downloader, internet archive downloader, archive.org bulk download, download entire archive.org collection, archive.org collection downloader, internet archive bulk downloader, archive.org multi-connection downloader, resume archive.org download, archive.org sync, windows -->
