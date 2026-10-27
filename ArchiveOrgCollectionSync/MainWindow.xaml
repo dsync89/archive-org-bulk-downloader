@@ -6,58 +6,215 @@
     xmlns:local="clr-namespace:ArchiveOrgCollectionSync"
     mc:Ignorable="d"
     Title="Archive.org Collection Sync"
-    Height="500"
-    Width="700"
+    Height="700"
+    Width="1080"
+    MinHeight="480"
+    MinWidth="780"
     WindowStartupLocation="CenterScreen"
-    ResizeMode="CanResizeWithGrip" Icon="/archive.ico">
+    ResizeMode="CanResizeWithGrip" Icon="/archive.ico"
+    Closing="Window_Closing">
+    <Window.TaskbarItemInfo>
+        <TaskbarItemInfo x:Name="Taskbar" />
+    </Window.TaskbarItemInfo>
+    <Window.Resources>
+        <Style x:Key="FilterButton" TargetType="RadioButton" BasedOn="{StaticResource {x:Type ToggleButton}}">
+            <Setter Property="Padding" Value="8,2" />
+            <Setter Property="Margin" Value="0,0,4,0" />
+            <Setter Property="GroupName" Value="FileFilter" />
+        </Style>
+        <Style x:Key="LevelToggle" TargetType="ToggleButton">
+            <Setter Property="Padding" Value="8,2" />
+            <Setter Property="Margin" Value="0,0,4,0" />
+        </Style>
+        <Style x:Key="BarButton" TargetType="Button">
+            <Setter Property="Height" Value="24" />
+            <Setter Property="MinWidth" Value="80" />
+            <Setter Property="Margin" Value="6,0,0,0" />
+            <Setter Property="Padding" Value="8,0" />
+        </Style>
+        <Style x:Key="RightCell" TargetType="TextBlock">
+            <Setter Property="HorizontalAlignment" Value="Right" />
+        </Style>
+    </Window.Resources>
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
-        <TabControl Margin="15,10,15,15" Grid.Row="0">
-            <TabItem Header="Download/Sync">
-                <StackPanel Margin="15,10,15,15">
-                    <TextBlock>Archive.org Collection URL:</TextBlock>
-                    <Grid Margin="0,10,0,0">
+        <TabControl x:Name="Tabs" Margin="15,10,15,10" Grid.Row="0">
+            <TabItem Header="Sync">
+                <DockPanel Margin="10">
+                    <Grid DockPanel.Dock="Top">
                         <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="80" />
                         </Grid.ColumnDefinitions>
-                        <TextBox x:Name="UrlTextBox" Padding="3" Margin="0,0,10,0" Grid.Column="0" MaxLines="1" TextChanged="TextBox_TextChanged" />
-                        <Button x:Name="PasteButton" Grid.Column="1" Click="PasteButton_Click">Paste</Button>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0">Collection URL:</TextBlock>
+                        <TextBox x:Name="UrlTextBox" Grid.Row="0" Grid.Column="1" Padding="3" Margin="0,0,10,0" MaxLines="1" TextChanged="TextBox_TextChanged" />
+                        <Button x:Name="PasteButton" Grid.Row="0" Grid.Column="2" Click="PasteButton_Click">Paste</Button>
+                        <TextBlock Grid.Row="1" Grid.Column="0" VerticalAlignment="Center" Margin="0,8,10,0">Destination Folder:</TextBlock>
+                        <TextBox x:Name="FolderTextBox" Grid.Row="1" Grid.Column="1" Padding="3" Margin="0,8,10,0" MaxLines="1" TextChanged="TextBox_TextChanged" />
+                        <Button x:Name="BrowseButton" Grid.Row="1" Grid.Column="2" Margin="0,8,0,0" Click="BrowseButton_Click">Browse...</Button>
                     </Grid>
-                    <TextBlock Margin="0,10,0,0">Destination Folder:</TextBlock>
-                    <Grid Margin="0,10,0,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="80" />
-                        </Grid.ColumnDefinitions>
-                        <TextBox x:Name="FolderTextBox" Padding="3" Grid.Column="0" Margin="0,0,10,0" MaxLines="1" TextChanged="TextBox_TextChanged" />
-                        <Button x:Name="BrowseButton" Grid.Column="1" Click="BrowseButton_Click">Browse...</Button>
-                    </Grid>
-                    <CheckBox x:Name="DeleteFilesCheckBox" Content="Delete Files in the Destination Folder that Don't Exist in the Archive.org Collection" Margin="0,10,0,0" />
-                    <StackPanel Orientation="Horizontal" Margin="0,20,0,0">
-                        <TextBlock VerticalAlignment="Center">Maximum Simultaneous Downloads:</TextBlock>
-                        <local:NumericUpDown x:Name="MaxDownloadsNumericUpDown" VerticalContentAlignment="Center" Width="40" Margin="10,0,0,0"
-                            MinValue="1" MaxValue="20" Value="8" />
-                    </StackPanel>
-                </StackPanel>
+                    <WrapPanel x:Name="OptionsPanel" DockPanel.Dock="Top" Margin="0,10,0,0">
+                        <TextBlock VerticalAlignment="Center" ToolTip="How many files download at the same time.">Files in parallel:</TextBlock>
+                        <local:NumericUpDown x:Name="FilesNumericUpDown" Width="44" Height="26" Margin="6,0,18,0" MinValue="1" MaxValue="16" Value="4"
+                            ToolTip="How many files download at the same time." />
+                        <TextBlock VerticalAlignment="Center" ToolTip="Ranged HTTP connections per file (files of 32 MB or more). Splits one big file into parallel streams.">Connections per file:</TextBlock>
+                        <local:NumericUpDown x:Name="ConnectionsNumericUpDown" Width="44" Height="26" Margin="6,0,18,0" MinValue="1" MaxValue="16" Value="4"
+                            ToolTip="Ranged HTTP connections per file (files of 32 MB or more). Splits one big file into parallel streams." />
+                        <TextBlock VerticalAlignment="Center">Verify:</TextBlock>
+                        <ComboBox x:Name="VerifyComboBox" Width="120" Margin="6,0,18,0" SelectedIndex="0"
+                            ToolTip="MD5 checks every existing and downloaded file. Size only is much faster for re-syncs.">
+                            <ComboBoxItem>MD5 checksum</ComboBoxItem>
+                            <ComboBoxItem>Size only</ComboBoxItem>
+                        </ComboBox>
+                        <CheckBox x:Name="OriginalsCheckBox" VerticalAlignment="Center" Margin="0,0,18,0" IsChecked="True"
+                            ToolTip="Skip files archive.org derived itself (thumbnails, torrents, _meta.xml…)." Content="Originals only" />
+                        <CheckBox x:Name="DeleteFilesCheckBox" VerticalAlignment="Center" Content="Delete files not in the collection"
+                            ToolTip="Delete files in the destination folder that don't exist in the Archive.org collection." />
+                    </WrapPanel>
+                    <DockPanel DockPanel.Dock="Top" Margin="0,12,0,6">
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                            <TextBlock VerticalAlignment="Center" Margin="0,0,6,0">Search:</TextBlock>
+                            <TextBox x:Name="SearchTextBox" Width="200" Padding="2" TextChanged="FileFilter_Changed" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <RadioButton x:Name="FilterAll" Style="{StaticResource FilterButton}" IsChecked="True" Checked="FileFilter_Changed">All</RadioButton>
+                            <RadioButton x:Name="FilterActive" Style="{StaticResource FilterButton}" Checked="FileFilter_Changed">Active</RadioButton>
+                            <RadioButton x:Name="FilterQueued" Style="{StaticResource FilterButton}" Checked="FileFilter_Changed">Queued</RadioButton>
+                            <RadioButton x:Name="FilterDone" Style="{StaticResource FilterButton}" Checked="FileFilter_Changed">Done</RadioButton>
+                            <RadioButton x:Name="FilterSkipped" Style="{StaticResource FilterButton}" Checked="FileFilter_Changed">Skipped</RadioButton>
+                            <RadioButton x:Name="FilterFailed" Style="{StaticResource FilterButton}" Checked="FileFilter_Changed">Failed</RadioButton>
+                        </StackPanel>
+                    </DockPanel>
+                    <DataGrid x:Name="FilesDataGrid" AutoGenerateColumns="False" IsReadOnly="True" HeadersVisibility="Column"
+                        GridLinesVisibility="None" SelectionMode="Extended" CanUserResizeRows="False" CanUserAddRows="False"
+                        EnableRowVirtualization="True" VirtualizingPanel.VirtualizationMode="Recycling" VirtualizingPanel.IsVirtualizing="True"
+                        RowHeight="22" Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}">
+                        <DataGrid.RowStyle>
+                            <Style TargetType="DataGridRow">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Status}" Value="Failed">
+                                        <Setter Property="Foreground" Value="Red" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Status}" Value="Done">
+                                        <Setter Property="Foreground" Value="Green" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Status}" Value="Skipped">
+                                        <Setter Property="Foreground" Value="Gray" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </DataGrid.RowStyle>
+                        <DataGrid.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="Open Containing Folder" Click="OpenFolderMenuItem_Click" />
+                                <MenuItem Header="Copy Name" Click="CopyNameMenuItem_Click" />
+                                <MenuItem Header="Copy Download URL" Click="CopyUrlMenuItem_Click" />
+                                <Separator />
+                                <MenuItem x:Name="RetrySelectedMenuItem" Header="Retry Selected" Click="RetrySelectedMenuItem_Click" />
+                            </ContextMenu>
+                        </DataGrid.ContextMenu>
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="" Binding="{Binding StatusGlyph}" Width="26" SortMemberPath="Status" />
+                            <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="*" />
+                            <DataGridTextColumn Header="Size" Binding="{Binding SizeText}" Width="80" SortMemberPath="Size" ElementStyle="{StaticResource RightCell}" />
+                            <DataGridTemplateColumn Header="Progress" Width="190" SortMemberPath="Percent">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="2,1">
+                                            <ProgressBar Value="{Binding Percent, Mode=OneWay}" Maximum="100" Height="16" />
+                                            <TextBlock Text="{Binding ProgressText}" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                FontSize="11" TextTrimming="CharacterEllipsis" ToolTip="{Binding ProgressText}" Foreground="Black" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="Speed" Binding="{Binding SpeedText}" Width="85" SortMemberPath="Speed" ElementStyle="{StaticResource RightCell}" />
+                            <DataGridTextColumn Header="ETA" Binding="{Binding EtaText}" Width="65" ElementStyle="{StaticResource RightCell}" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </TabItem>
+            <TabItem Header="Sessions" Selector.Selected="SessionsTabItem_Selected">
+                <DockPanel Margin="10">
+                    <WrapPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+                        <Button x:Name="SessionOpenButton" Style="{StaticResource BarButton}" Margin="0" Click="SessionOpenButton_Click"
+                            ToolTip="Load this session's file list and log without downloading.">Open</Button>
+                        <Button x:Name="SessionResumeButton" Style="{StaticResource BarButton}" Click="SessionResumeButton_Click"
+                            ToolTip="Continue queued and partially downloaded files.">Resume</Button>
+                        <Button x:Name="SessionRetryButton" Style="{StaticResource BarButton}" Click="SessionRetryButton_Click">Retry Failed</Button>
+                        <Button x:Name="SessionRerunButton" Style="{StaticResource BarButton}" Click="SessionRerunButton_Click"
+                            ToolTip="Start a new session with the same URL, folder and options (rescans the collection).">Re-run</Button>
+                        <Button x:Name="SessionExportButton" Style="{StaticResource BarButton}" Click="SessionExportButton_Click">Export CSV...</Button>
+                        <Button x:Name="SessionLogButton" Style="{StaticResource BarButton}" Click="SessionLogButton_Click">Open Log</Button>
+                        <Button x:Name="SessionDeleteButton" Style="{StaticResource BarButton}" Click="SessionDeleteButton_Click">Delete</Button>
+                        <Button Style="{StaticResource BarButton}" Click="SessionsFolderButton_Click">Sessions Folder</Button>
+                    </WrapPanel>
+                    <ListView x:Name="SessionsListView" SelectionMode="Single" MouseDoubleClick="SessionsListView_MouseDoubleClick"
+                        SelectionChanged="SessionsListView_SelectionChanged">
+                        <ListView.View>
+                            <GridView>
+                                <GridViewColumn Header="When" DisplayMemberBinding="{Binding WhenText}" Width="120" />
+                                <GridViewColumn Header="Collection" DisplayMemberBinding="{Binding Collection}" Width="150" />
+                                <GridViewColumn Header="Destination" DisplayMemberBinding="{Binding Folder}" Width="190" />
+                                <GridViewColumn Header="Files" DisplayMemberBinding="{Binding FilesText}" Width="110" />
+                                <GridViewColumn Header="Size" DisplayMemberBinding="{Binding SizeText}" Width="80" />
+                                <GridViewColumn Header="Downloaded" DisplayMemberBinding="{Binding DownloadedText}" Width="85" />
+                                <GridViewColumn Header="Avg Speed" DisplayMemberBinding="{Binding SpeedText}" Width="85" />
+                                <GridViewColumn Header="Result" DisplayMemberBinding="{Binding ResultText}" Width="100" />
+                            </GridView>
+                        </ListView.View>
+                    </ListView>
+                </DockPanel>
             </TabItem>
             <TabItem Header="Log" Selector.Selected="LogTabItem_Selected">
-                <ListBox x:Name="LogListBox" Margin="15">
-                    <ListBox.ItemTemplate>
-                        <DataTemplate>
-                            <TextBlock Text="{Binding Message}" Foreground="{Binding Brush}" />
-                        </DataTemplate>
-                    </ListBox.ItemTemplate>
-                </ListBox>
+                <DockPanel Margin="10">
+                    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                            <CheckBox x:Name="AutoScrollCheckBox" VerticalAlignment="Center" IsChecked="True" Margin="0,0,10,0">Auto-scroll</CheckBox>
+                            <Button Style="{StaticResource BarButton}" MinWidth="60" Click="LogCopyButton_Click">Copy</Button>
+                            <Button Style="{StaticResource BarButton}" MinWidth="60" Click="LogSaveButton_Click">Save...</Button>
+                            <Button Style="{StaticResource BarButton}" MinWidth="60" Click="LogClearButton_Click">Clear</Button>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <ToggleButton x:Name="LogDebugToggle" Style="{StaticResource LevelToggle}" Checked="LogFilter_Changed" Unchecked="LogFilter_Changed"
+                                ToolTip="Per-file details such as skipped files.">Debug</ToggleButton>
+                            <ToggleButton x:Name="LogInfoToggle" Style="{StaticResource LevelToggle}" IsChecked="True" Checked="LogFilter_Changed" Unchecked="LogFilter_Changed">Info</ToggleButton>
+                            <ToggleButton x:Name="LogWarnToggle" Style="{StaticResource LevelToggle}" IsChecked="True" Checked="LogFilter_Changed" Unchecked="LogFilter_Changed">Warn</ToggleButton>
+                            <ToggleButton x:Name="LogErrorToggle" Style="{StaticResource LevelToggle}" IsChecked="True" Checked="LogFilter_Changed" Unchecked="LogFilter_Changed">Error</ToggleButton>
+                            <TextBlock VerticalAlignment="Center" Margin="10,0,6,0">Search:</TextBlock>
+                            <TextBox x:Name="LogSearchTextBox" Width="200" Padding="2" TextChanged="LogFilter_Changed" />
+                        </StackPanel>
+                    </DockPanel>
+                    <ListView x:Name="LogListView" SelectionMode="Extended" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
+                        <ListView.ItemContainerStyle>
+                            <Style TargetType="ListViewItem">
+                                <Setter Property="Foreground" Value="{Binding Brush}" />
+                            </Style>
+                        </ListView.ItemContainerStyle>
+                        <ListView.View>
+                            <GridView>
+                                <GridViewColumn Header="Time" DisplayMemberBinding="{Binding Time, StringFormat=HH:mm:ss}" Width="70" />
+                                <GridViewColumn Header="Level" DisplayMemberBinding="{Binding Level}" Width="60" />
+                                <GridViewColumn Header="File" DisplayMemberBinding="{Binding File}" Width="320" />
+                                <GridViewColumn Header="Message" DisplayMemberBinding="{Binding Message}" Width="520" />
+                            </GridView>
+                        </ListView.View>
+                    </ListView>
+                </DockPanel>
             </TabItem>
             <TabItem Header="About">
                 <ScrollViewer>
                     <StackPanel Margin="10">
                         <TextBlock TextWrapping="Wrap" FontStyle="Italic">But God showed his great love for us by sending Christ to die for us while we were still sinners. - Romans 5:8 (NLT)</TextBlock>
-                        <TextBlock TextWrapping="Wrap" Margin="0,10,0,0">Version 1.2 - Released June 29, 2022</TextBlock>
+                        <TextBlock x:Name="VersionTextBlock" TextWrapping="Wrap" Margin="0,10,0,0">Version 1.3</TextBlock>
                         <TextBlock TextWrapping="Wrap" Margin="0,10,0,0">MIT License</TextBlock>
                         <TextBlock TextWrapping="Wrap" Margin="0,10,0,0">Copyright (c) 2023 Unbroken Software, LLC</TextBlock>
                         <TextBlock TextWrapping="Wrap" Margin="0,10,0,0">Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:</TextBlock>
@@ -68,20 +225,25 @@
             </TabItem>
         </TabControl>
         <Border Grid.Row="1" Margin="15,0,15,15" BorderThickness="1" BorderBrush="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}">
-            <Grid Margin="15,15,15,15">
+            <Grid Margin="12">
                 <Grid.RowDefinitions>
-                    <RowDefinition />
-                    <RowDefinition />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="80" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <TextBlock x:Name="ProgressTextBlock" Grid.Column="0" Grid.ColumnSpan="2" Grid.Row="0" Margin="0,-5,0,5" Visibility="Collapsed" />
-                <ProgressBar x:Name="ProgressBar" Grid.Column="0" Grid.Row="1" Margin="0,0,10,0" Height="24" />
-                <Button x:Name="StartButton" Grid.Column="1" Grid.Row="1" IsEnabled="False" Click="StartButton_Click" Height="24">Start</Button>
+                <TextBlock x:Name="StatusTextBlock" Grid.Row="0" Grid.Column="0" Margin="0,0,10,6" TextTrimming="CharacterEllipsis">Ready.</TextBlock>
+                <TextBlock x:Name="SummaryTextBlock" Grid.Row="0" Grid.Column="1" Margin="0,0,0,6" HorizontalAlignment="Right" />
+                <ProgressBar x:Name="ProgressBar" Grid.Row="1" Grid.Column="0" Height="24" Maximum="1000" />
+                <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Margin="4,0,0,0">
+                    <Button x:Name="StartButton" Style="{StaticResource BarButton}" IsEnabled="False" Click="StartButton_Click">Start</Button>
+                    <Button x:Name="PauseButton" Style="{StaticResource BarButton}" IsEnabled="False" Click="PauseButton_Click">Pause</Button>
+                    <Button x:Name="StopButton" Style="{StaticResource BarButton}" IsEnabled="False" Click="StopButton_Click">Stop</Button>
+                    <Button x:Name="RetryFailedButton" Style="{StaticResource BarButton}" IsEnabled="False" Click="RetryFailedButton_Click">Retry Failed</Button>
+                </StackPanel>
             </Grid>
         </Border>
     </Grid>
-   
 </Window>

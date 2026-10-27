@@ -1,6 +1,7 @@
 namespace ArchiveOrgCollectionSync
 {
     using System;
+    using System.Globalization;
     using System.Windows;
     using System.Windows.Media;
 
@@ -21,8 +22,13 @@ namespace ArchiveOrgCollectionSync
         private static readonly Brush SuccessBrush = LogEntry.Freeze(new SolidColorBrush(Colors.Green));
 
         public LogEntry(LogLevel level, string message, string? file)
+            : this(DateTime.Now, level, message, file)
         {
-            this.Time = DateTime.Now;
+        }
+
+        public LogEntry(DateTime time, LogLevel level, string message, string? file)
+        {
+            this.Time = time;
             this.Level = level;
             this.Message = message;
             this.File = file ?? string.Empty;
@@ -47,9 +53,22 @@ namespace ArchiveOrgCollectionSync
 
         public override string ToString()
         {
-            return this.File.Length > 0
-                ? $"{this.Time:yyyy-MM-dd HH:mm:ss}\t{this.Level}\t{this.File}\t{this.Message}"
-                : $"{this.Time:yyyy-MM-dd HH:mm:ss}\t{this.Level}\t\t{this.Message}";
+            return $"{this.Time.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)}\t{this.Level}\t{this.File}\t{this.Message}";
+        }
+
+        /// <summary>Parses a line written by <see cref="ToString"/> (session log files).</summary>
+        public static LogEntry? Parse(string line)
+        {
+            string[] parts = line.Split('\t', 4);
+
+            if (parts.Length < 4
+                || !DateTime.TryParse(parts[0], CultureInfo.InvariantCulture, DateTimeStyles.None, out var time)
+                || !Enum.TryParse<LogLevel>(parts[1], out var level))
+            {
+                return null;
+            }
+
+            return new LogEntry(time, level, parts[3], parts[2]);
         }
 
         private static Brush Freeze(Brush brush)

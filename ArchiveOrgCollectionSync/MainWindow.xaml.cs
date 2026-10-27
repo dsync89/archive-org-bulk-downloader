@@ -2,24 +2,148 @@
 {
     using System;
     using System.Collections.Generic;
+    using System.Collections.ObjectModel;
+    using System.ComponentModel;
+    using System.Diagnostics;
     using System.IO;
     using System.Linq;
-    using System.Security.Cryptography;
+    using System.Reflection;
     using System.Threading;
     using System.Threading.Tasks;
     using System.Windows;
     using System.Windows.Controls;
+    using System.Windows.Data;
     using System.Windows.Media;
-    using System.Xml.Serialization;
+    using System.Windows.Shell;
+    using System.Windows.Threading;
 
     using Microsoft.WindowsAPICodePack.Dialogs;
 
     public partial class MainWindow
     {
+        private const int MaxLogEntries = 50000;
+
+        private static readonly TimeSpan SessionSaveInterval = TimeSpan.FromSeconds(10);
+
+        private readonly ObservableCollection<LogEntry> logEntries = new();
+        private readonly ListCollectionView logView;
+        private readonly SyncLog log = new();
+        private readonly DispatcherTimer timer;
+        private readonly Settings settings;
+        private readonly Stopwatch runClock = new();
+
+        private ObservableCollection<FileItem> items = new();
+        private ListCollectionView itemsView;
+        private SessionRecord? session;
+        private DownloadEngine? engine;
+        private CancellationTokenSource? cancellation;
+        private bool running;
+        private bool stopRequested;
+        private bool closeAfterRun;
+        private DateTime lastTick = DateTime.UtcNow;
+        private DateTime lastSave = DateTime.UtcNow;
+        private long lastBytesReceived;
+        private double overallSpeed;
+        private long sessionBaseBytes;
+        private double sessionBaseSeconds;
+
         public MainWindow()
         {
             this.InitializeComponent();
+
+            this.itemsView = this.CreateItemsView(this.items);
+            this.logView = new ListCollectionView(this.logEntries) { Filter = this.FilterLogEntry };
+            this.LogListView.ItemsSource = this.logView;
+
+            this.settings = Settings.Load();
+            this.UrlTextBox.Text = this.settings.Url;
+            this.FolderTextBox.Text = this.settings.Folder;
+            this.ApplyOptions(this.settings.Options);
+
+            this.VersionTextBlock.Text = $"Version {MainWindow.VersionText()}";
+            this.RefreshSessions();
+
+            this.timer = new DispatcherTimer(TimeSpan.FromMilliseconds(250), DispatcherPriority.Background, (_, _) => this.Tick(), this.Dispatcher);
+            this.timer.Start();
+
+            this.UpdateButtons();
             this.UrlTextBox.Focus();
+        }
+
+        public static string? ParseCollectionName(string url)
+        {
+            if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri)
+                || !uri.Host.EndsWith("archive.org", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            string[] segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+
+            if (segments.Length < 2
+                || !(segments[0].Equals("details", StringComparison.OrdinalIgnoreCase) || segments[0].Equals("download", StringComparison.OrdinalIgnoreCase)))
+            {
+                return null;
+            }
+
+            return Uri.UnescapeDataString(segments[1]);
+        }
+
+        private static string VersionText()
+        {
+            string version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "1.3";
+            int plus = version.IndexOf('+');
+
+            // "1.3.0+<full git sha>" -> "1.3.0 (abc1234)"
+            return plus >= 0 && version.Length > plus + 8 ? $"{version[..plus]} ({version.Substring(plus + 1, 7)})" : version;
+        }
+
+        private static void OpenWithShell(string path)
+        {
+            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+        }
+
+        private ListCollectionView CreateItemsView(ObservableCollection<FileItem> source)
+        {
+            var view = new ListCollectionView(source) { Filter = this.FilterItem, IsLiveFiltering = true };
+            view.LiveFilteringProperties.Add(nameof(FileItem.Status));
+            this.FilesDataGrid.ItemsSource = view;
+            return view;
+        }
+
+        private void LoadItems(IEnumerable<FileItem> source)
+        {
+            this.items = new ObservableCollection<FileItem>(source);
+            this.itemsView = this.CreateItemsView(this.items);
+        }
+
+        private void ApplyOptions(SyncOptions options)
+        {
+            this.FilesNumericUpDown.Value = Math.Clamp(options.FilesInParallel, this.FilesNumericUpDown.MinValue, this.FilesNumericUpDown.MaxValue);
+            this.ConnectionsNumericUpDown.Value = Math.Clamp(options.ConnectionsPerFile, this.ConnectionsNumericUpDown.MinValue, this.ConnectionsNumericUpDown.MaxValue);
+            this.VerifyComboBox.SelectedIndex = options.Verify == VerifyMode.SizeOnly ? 1 : 0;
+            this.OriginalsCheckBox.IsChecked = options.OriginalsOnly;
+            this.DeleteFilesCheckBox.IsChecked = options.DeleteExtraFiles;
+        }
+
+        private SyncOptions ReadOptions()
+        {
+            return new SyncOptions
+            {
+                FilesInParallel = this.FilesNumericUpDown.Value,
+                ConnectionsPerFile = this.ConnectionsNumericUpDown.Value,
+                Verify = this.VerifyComboBox.SelectedIndex == 1 ? VerifyMode.SizeOnly : VerifyMode.Md5,
+                OriginalsOnly = this.OriginalsCheckBox.IsChecked == true,
+                DeleteExtraFiles = this.DeleteFilesCheckBox.IsChecked == true
+            };
+        }
+
+        private void SaveSettings()
+        {
+            this.settings.Url = this.UrlTextBox.Text.Trim();
+            this.settings.Folder = this.FolderTextBox.Text.Trim();
+            this.settings.Options = this.ReadOptions();
+            this.settings.Save();
         }
 
         private void PasteButton_Click(object sender, RoutedEventArgs e)
@@ -49,7 +173,7 @@
                 DefaultDirectory = folder
             };
 
-            if (dialog.ShowDialog(Application.Current.Windows.OfType<Window>().Single(x => x.IsActive)) != CommonFileDialogResult.Ok)
+            if (dialog.ShowDialog(this) != CommonFileDialogResult.Ok)
             {
                 return;
             }
@@ -61,12 +185,16 @@
 
         private void TextBox_TextChanged(object sender, TextChangedEventArgs e)
         {
-            this.StartButton.IsEnabled = this.FolderTextBox.Text.Trim().Length > 0 && this.UrlTextBox.Text.Trim().Length > 0;
+            if (this.IsLoaded)
+            {
+                this.UpdateButtons();
+            }
         }
 
-        private void StartButton_Click(object sender, RoutedEventArgs e)
+        private async void StartButton_Click(object sender, RoutedEventArgs e)
         {
-            string? collectionName = MainWindow.ParseCollectionName(this.UrlTextBox.Text);
+            string url = this.UrlTextBox.Text.Trim();
+            string? collectionName = MainWindow.ParseCollectionName(url);
 
             if (collectionName == null)
             {
@@ -82,237 +210,653 @@
                 return;
             }
 
-            this.Start(collectionName, folder, this.DeleteFilesCheckBox.IsChecked == true, this.MaxDownloadsNumericUpDown.Value);
+            this.SaveSettings();
+            this.session = SessionStore.Create(url, collectionName, folder, this.ReadOptions());
+            this.LoadItems(Array.Empty<FileItem>());
+            this.logEntries.Clear();
+
+            await this.RunAsync(true, i => i.CurrentStatus == FileStatus.Queued);
         }
 
-        public static string? ParseCollectionName(string url)
+        private async void PauseButton_Click(object sender, RoutedEventArgs e)
         {
-            if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri)
-                || !uri.Host.EndsWith("archive.org", StringComparison.OrdinalIgnoreCase))
+            if (this.running)
             {
-                return null;
+                this.SetStatus("Pausing… (partial downloads are kept and resume where they stopped)");
+                this.cancellation?.Cancel();
+                return;
             }
 
-            string[] segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            await this.RunAsync(false, i => i.CurrentStatus == FileStatus.Queued);
+        }
 
-            if (segments.Length < 2
-                || !(segments[0].Equals("details", StringComparison.OrdinalIgnoreCase) || segments[0].Equals("download", StringComparison.OrdinalIgnoreCase)))
+        private void StopButton_Click(object sender, RoutedEventArgs e)
+        {
+            this.stopRequested = true;
+            this.SetStatus("Stopping…");
+            this.cancellation?.Cancel();
+        }
+
+        private async void RetryFailedButton_Click(object sender, RoutedEventArgs e)
+        {
+            await this.RunAsync(false, i => i.CurrentStatus is FileStatus.Failed or FileStatus.Queued);
+        }
+
+        /// <summary>
+        /// Runs the current session: optionally scans the collection first, then downloads the items matching
+        /// <paramref name="selector"/>. Pause, Stop and errors all end here with the session saved.
+        /// </summary>
+        private async Task RunAsync(bool scan, Func<FileItem, bool> selector)
+        {
+            if (this.running || this.session == null)
             {
-                return null;
+                return;
             }
 
-            return Uri.UnescapeDataString(segments[1]);
-        }
+            var current = this.session;
+            this.running = true;
+            this.stopRequested = false;
+            this.cancellation = new CancellationTokenSource();
+            this.engine = new DownloadEngine(current.Options, this.log);
+            this.lastBytesReceived = 0;
+            this.overallSpeed = 0;
+            this.sessionBaseBytes = current.BytesDownloaded;
+            this.sessionBaseSeconds = current.ActiveSeconds;
+            this.runClock.Restart();
+            current.State = SessionState.Running;
+            current.Ended = null;
+            this.log.Open(SessionStore.LogPath(current));
+            this.UpdateButtons();
 
-        private void ChangeState(bool running)
-        {
-            this.Dispatcher.Invoke(() =>
+            var token = this.cancellation.Token;
+            bool failed = false;
+
+            try
             {
-                this.StartButton.IsEnabled =
-                    this.UrlTextBox.IsEnabled =
-                    this.FolderTextBox.IsEnabled =
-                    this.PasteButton.IsEnabled =
-                    this.BrowseButton.IsEnabled =
-                    this.DeleteFilesCheckBox.IsEnabled =
-                    this.MaxDownloadsNumericUpDown.IsEnabled =
-                    !running;
-
-                if (!running)
+                if (scan)
                 {
-                    this.ProgressBar.Value = 0;
-                }
-            });
-        }
+                    this.SetStatus($"Scanning archive.org collection {current.Collection}…");
+                    this.log.Write(LogLevel.Info, $"Scanning collection {current.Collection} → {current.Folder}");
 
-        private void Report(string message, bool error = false, bool complete = false)
-        {
-            this.Dispatcher.Invoke(() =>
-            {
-                this.ProgressTextBlock.Text = message;
-                this.ProgressTextBlock.Visibility = Visibility.Visible;
-                
-                if (error)
-                {
-                    this.ProgressTextBlock.Foreground = new SolidColorBrush(Colors.Red);
-                }
-                else if (complete)
-                {
-                    this.ProgressTextBlock.Foreground = new SolidColorBrush(Colors.Green);
-                }
-                else
-                {
-                    this.ProgressTextBlock.Foreground = SystemColors.ControlTextBrush;
-                }
+                    File[] files = await DownloadEngine.FetchFileListAsync(current.Collection, token);
+                    var wanted = current.Options.OriginalsOnly
+                        ? files.Where(f => f.Source.Length == 0 || f.Source.Equals("original", StringComparison.OrdinalIgnoreCase)).ToArray()
+                        : files;
 
-                var item = new LogItem(message, error, complete);
-                this.LogListBox.Items.Add(item);
-                this.LogListBox.SelectedIndex = this.LogListBox.Items.Count - 1;
-                this.LogListBox.ScrollIntoView(item);
-            });
-        }
+                    this.LoadItems(wanted.Select(f => new FileItem(f)));
+                    this.log.Write(
+                        LogLevel.Info,
+                        current.Options.OriginalsOnly
+                            ? $"{files.Length} file(s) listed, {wanted.Length} original(s) selected ({Format.Bytes(wanted.Sum(f => f.Size))})."
+                            : $"{files.Length} file(s) listed ({Format.Bytes(files.Sum(f => f.Size))}).");
 
-        private void Start(string collectionName, string folder, bool deleteFiles, int threads)
-        {
-            ThreadPool.QueueUserWorkItem(_ =>
-            {
-                this.ChangeState(true);
-                this.Report("Scanning archive.org collection files...");
-
-                string collectionXmlUrl = $"https://archive.org/download/{collectionName}/{collectionName}_files.xml";
-                string collectionXml;
-
-                try
-                {
-                    using var client = new PatientWebClient();
-                    collectionXml = client.DownloadString(collectionXmlUrl);
-                }
-                catch (Exception ex)
-                {
-                    this.Report($"Unable to parse collection metadata; the XML list of files could not be downloaded. - {ex.Message}", true);
-                    return;
-                }
-
-                File[] files;
-
-                try
-                {
-                    var serializer = new XmlSerializer(typeof(FileCollection));
-
-                    using var reader = new StringReader(collectionXml);
-                    files = ((FileCollection)(serializer.Deserialize(reader) ?? throw new NullReferenceException())).Files;
-                }
-                catch (Exception ex)
-                {
-                    this.Report($"Unable to deserialize the list of files from archive.org. - {ex.Message}", true);
-                    return;
-                }
-
-                this.Dispatcher.Invoke(() => this.ProgressBar.Maximum = files.Length);
-
-                int count = 0;
-                int skippingCount = 0;
-                int downloadErrorCount = 0;
-                int downloadCorruptCount = 0;
-                int downloadSuccessCount = 0;
-                int deletedCount = 0;
-                int deletedErrorCount = 0;
-
-                if (deleteFiles)
-                {
-                    var collectionFileNames = new HashSet<string>(files.Select(f => f.Name), StringComparer.OrdinalIgnoreCase);
-
-                    foreach (string filePath in Directory.GetFiles(folder, "*.*", SearchOption.AllDirectories))
+                    if (current.Options.DeleteExtraFiles)
                     {
-                        string relativeFilePath = Path.GetRelativePath(folder, filePath).Replace('\\', '/');
+                        this.SetStatus("Deleting files that are not in the collection…");
+                        var engineForDelete = this.engine;
+                        var (deleted, errors) = await Task.Run(() => engineForDelete.DeleteExtraFiles(current.Folder, files), token);
+                        this.log.Write(errors > 0 ? LogLevel.Warn : LogLevel.Info, $"{deleted} file(s) deleted because they are not in the collection, {errors} could not be deleted.");
+                    }
 
-                        if (collectionFileNames.Contains(relativeFilePath))
-                        {
-                            continue;
-                        }
+                    current.Capture(this.items);
+                    SessionStore.Save(current);
+                    this.RefreshSessions();
+                }
 
-                        try
+                var queue = this.items.Where(selector).ToList();
+
+                foreach (var item in queue.Where(i => i.CurrentStatus == FileStatus.Failed))
+                {
+                    item.Restore(FileStatus.Queued, null);
+                }
+
+                this.SetStatus($"Syncing {queue.Count} file(s) — {current.Options.FilesInParallel} in parallel, up to {current.Options.ConnectionsPerFile} connection(s) each…");
+                this.log.Write(LogLevel.Info, $"Processing {queue.Count} file(s) with {current.Options.FilesInParallel} file(s) in parallel and {current.Options.ConnectionsPerFile} connection(s) per file.");
+                await this.engine.RunAsync(current.Collection, current.Folder, queue, token);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                failed = true;
+                this.log.Write(LogLevel.Error, $"Unable to sync the collection. - {ex.Message}");
+            }
+
+            this.runClock.Stop();
+            this.Tick();
+
+            int done = this.items.Count(i => i.CurrentStatus == FileStatus.Done);
+            int skipped = this.items.Count(i => i.CurrentStatus == FileStatus.Skipped);
+            int failedFiles = this.items.Count(i => i.CurrentStatus == FileStatus.Failed);
+            int queued = this.items.Count(i => i.CurrentStatus == FileStatus.Queued);
+
+            current.State = this.stopRequested || failed ? SessionState.Stopped
+                : token.IsCancellationRequested || queued > 0 ? SessionState.Paused
+                : SessionState.Completed;
+            current.Ended = DateTime.Now;
+            current.ActiveSeconds = this.sessionBaseSeconds + this.runClock.Elapsed.TotalSeconds;
+            current.BytesDownloaded = this.sessionBaseBytes + this.engine.BytesReceived;
+            current.Capture(this.items);
+
+            var level = failed || failedFiles > 0 ? LogLevel.Error : current.State == SessionState.Completed ? LogLevel.Success : LogLevel.Warn;
+            string summary = $"{current.State}: {done} downloaded, {skipped} already up to date, {failedFiles} failed, {queued} queued. "
+                + $"{Format.Bytes(this.engine.BytesReceived)} in {Format.Duration(this.runClock.Elapsed)} ({Format.Speed(this.engine.BytesReceived / Math.Max(1, this.runClock.Elapsed.TotalSeconds))}).";
+            this.log.Write(level, summary);
+            this.log.Close();
+            this.Tick();
+
+            SessionStore.Save(current);
+            this.running = false;
+            this.cancellation.Dispose();
+            this.cancellation = null;
+            this.SetStatus(summary, level);
+            this.RefreshSessions();
+            this.UpdateButtons();
+
+            if (this.closeAfterRun)
+            {
+                this.Close();
+            }
+        }
+
+        private void Tick()
+        {
+            var now = DateTime.UtcNow;
+            double elapsed = (now - this.lastTick).TotalSeconds;
+            this.lastTick = now;
+
+            int queued = 0, active = 0, done = 0, skipped = 0, failed = 0;
+            long totalBytes = 0, doneBytes = 0;
+
+            foreach (var item in this.items)
+            {
+                if (item.IsActive || item.Status != item.CurrentStatus)
+                {
+                    item.Refresh(elapsed);
+                }
+
+                switch (item.Status)
+                {
+                    case FileStatus.Queued: queued++; break;
+                    case FileStatus.Done: done++; break;
+                    case FileStatus.Skipped: skipped++; break;
+                    case FileStatus.Failed: failed++; break;
+                    default: active++; break;
+                }
+
+                totalBytes += item.Size;
+                doneBytes += Math.Min(item.Size, item.BytesDone);
+            }
+
+            this.FilterAll.Content = $"All ({this.items.Count})";
+            this.FilterActive.Content = $"Active ({active})";
+            this.FilterQueued.Content = $"Queued ({queued})";
+            this.FilterDone.Content = $"Done ({done})";
+            this.FilterSkipped.Content = $"Skipped ({skipped})";
+            this.FilterFailed.Content = $"Failed ({failed})";
+
+            this.DrainLog();
+
+            if (this.items.Count == 0)
+            {
+                this.SummaryTextBlock.Text = string.Empty;
+                this.ProgressBar.Value = 0;
+                this.Taskbar.ProgressState = TaskbarItemProgressState.None;
+                return;
+            }
+
+            string speedText = string.Empty;
+            string etaText = string.Empty;
+            string connectionsText = string.Empty;
+
+            if (this.running && this.engine != null && elapsed > 0)
+            {
+                long received = this.engine.BytesReceived;
+                double instant = Math.Max(0, received - this.lastBytesReceived) / elapsed;
+                this.lastBytesReceived = received;
+                this.overallSpeed = this.overallSpeed == 0 ? instant : (this.overallSpeed * 0.8) + (instant * 0.2);
+                speedText = " · " + (Format.Speed(this.overallSpeed) is { Length: > 0 } s ? s : "0 B/s");
+                etaText = this.overallSpeed > 1 ? " · ETA " + Format.Duration(TimeSpan.FromSeconds((totalBytes - doneBytes) / this.overallSpeed)) : string.Empty;
+                connectionsText = $" · {this.engine.ActiveConnections} connection(s)";
+
+                if (now - this.lastSave > MainWindow.SessionSaveInterval && this.session != null)
+                {
+                    this.lastSave = now;
+                    this.session.ActiveSeconds = this.sessionBaseSeconds + this.runClock.Elapsed.TotalSeconds;
+                    this.session.BytesDownloaded = this.sessionBaseBytes + received;
+                    this.session.Capture(this.items);
+                    SessionStore.Save(this.session);
+                }
+            }
+
+            this.SummaryTextBlock.Text = $"{done + skipped} / {this.items.Count} files · {Format.Bytes(doneBytes)} / {Format.Bytes(totalBytes)}{speedText}{etaText}{connectionsText}";
+
+            double fraction = totalBytes > 0 ? (double)doneBytes / totalBytes : (double)(done + skipped) / this.items.Count;
+            this.ProgressBar.Value = fraction * this.ProgressBar.Maximum;
+            this.Taskbar.ProgressValue = fraction;
+            this.Taskbar.ProgressState = !this.running ? TaskbarItemProgressState.None
+                : failed > 0 ? TaskbarItemProgressState.Error
+                : TaskbarItemProgressState.Normal;
+            this.Title = this.running ? $"{fraction:0%} · Archive.org Collection Sync" : "Archive.org Collection Sync";
+        }
+
+        private void DrainLog()
+        {
+            LogEntry? lastVisible = null;
+
+            foreach (var entry in this.log.Drain())
+            {
+                this.logEntries.Add(entry);
+
+                if (this.FilterLogEntry(entry))
+                {
+                    lastVisible = entry;
+                }
+            }
+
+            while (this.logEntries.Count > MainWindow.MaxLogEntries)
+            {
+                this.logEntries.RemoveAt(0);
+            }
+
+            if (lastVisible != null && this.AutoScrollCheckBox.IsChecked == true && this.LogListView.IsVisible)
+            {
+                this.LogListView.ScrollIntoView(lastVisible);
+            }
+        }
+
+        private void SetStatus(string message, LogLevel level = LogLevel.Info)
+        {
+            this.StatusTextBlock.Text = message;
+            this.StatusTextBlock.ToolTip = message;
+            this.StatusTextBlock.Foreground = level switch
+            {
+                LogLevel.Error => Brushes.Red,
+                LogLevel.Warn => Brushes.DarkOrange,
+                LogLevel.Success => Brushes.Green,
+                _ => SystemColors.ControlTextBrush
+            };
+        }
+
+        private void UpdateButtons()
+        {
+            bool hasInput = this.FolderTextBox.Text.Trim().Length > 0 && this.UrlTextBox.Text.Trim().Length > 0;
+            bool hasQueued = this.items.Any(i => i.CurrentStatus == FileStatus.Queued);
+            bool hasFailed = this.items.Any(i => i.CurrentStatus == FileStatus.Failed);
+
+            this.StartButton.IsEnabled = !this.running && hasInput;
+            bool canResume = !this.running && this.session != null && hasQueued;
+            this.PauseButton.Content = canResume ? "Resume" : "Pause";
+            this.PauseButton.IsEnabled = this.running || canResume;
+            this.StopButton.IsEnabled = this.running;
+            this.RetryFailedButton.IsEnabled = !this.running && this.session != null && hasFailed;
+            this.RetrySelectedMenuItem.IsEnabled = !this.running && this.session != null;
+
+            this.UrlTextBox.IsEnabled =
+                this.FolderTextBox.IsEnabled =
+                this.PasteButton.IsEnabled =
+                this.BrowseButton.IsEnabled =
+                this.OptionsPanel.IsEnabled =
+                !this.running;
+
+            this.UpdateSessionButtons();
+        }
+
+        private bool FilterItem(object value)
+        {
+            var item = (FileItem)value;
+
+            bool statusMatches =
+                this.FilterActive.IsChecked == true ? item.IsActive
+                : this.FilterQueued.IsChecked == true ? item.Status == FileStatus.Queued
+                : this.FilterDone.IsChecked == true ? item.Status == FileStatus.Done
+                : this.FilterSkipped.IsChecked == true ? item.Status == FileStatus.Skipped
+                : this.FilterFailed.IsChecked != true || item.Status == FileStatus.Failed;
+
+            string search = this.SearchTextBox.Text.Trim();
+            return statusMatches && (search.Length == 0 || item.Name.Contains(search, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private void FileFilter_Changed(object sender, RoutedEventArgs e)
+        {
+            if (this.IsLoaded)
+            {
+                this.itemsView.Refresh();
+            }
+        }
+
+        private IEnumerable<FileItem> SelectedItems() => this.FilesDataGrid.SelectedItems.OfType<FileItem>();
+
+        private void OpenFolderMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            var item = this.SelectedItems().FirstOrDefault();
+
+            if (item == null || this.session == null)
+            {
+                return;
+            }
+
+            string path = Path.Combine(this.session.Folder, item.Name.Replace('/', Path.DirectorySeparatorChar));
+
+            if (System.IO.File.Exists(path))
+            {
+                Process.Start("explorer.exe", $"/select,\"{path}\"");
+            }
+            else if (Directory.Exists(Path.GetDirectoryName(path)))
+            {
+                MainWindow.OpenWithShell(Path.GetDirectoryName(path)!);
+            }
+        }
+
+        private void CopyNameMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            string text = string.Join(Environment.NewLine, this.SelectedItems().Select(i => i.Name));
+
+            if (text.Length > 0)
+            {
+                Clipboard.SetText(text);
+            }
+        }
+
+        private void CopyUrlMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            if (this.session == null)
+            {
+                return;
+            }
+
+            string collection = Uri.EscapeDataString(this.session.Collection);
+            string text = string.Join(
+                Environment.NewLine,
+                this.SelectedItems().Select(i => $"https://archive.org/download/{collection}/{string.Join('/', i.Name.Split('/').Select(Uri.EscapeDataString))}"));
+
+            if (text.Length > 0)
+            {
+                Clipboard.SetText(text);
+            }
+        }
+
+        private async void RetrySelectedMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            var selected = this.SelectedItems().ToHashSet();
+
+            if (this.running || selected.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var item in selected.Where(i => i.CurrentStatus != FileStatus.Queued))
+            {
+                item.Restore(FileStatus.Queued, null);
+            }
+
+            await this.RunAsync(false, selected.Contains);
+        }
+
+        // ----- Sessions tab -----
+
+        private SessionRecord? SelectedSession => this.SessionsListView.SelectedItem as SessionRecord;
+
+        private void RefreshSessions()
+        {
+            string? selectedId = this.SelectedSession?.Id;
+            var records = SessionStore.LoadAll();
+            this.SessionsListView.ItemsSource = records;
+            this.SessionsListView.SelectedItem = records.FirstOrDefault(r => r.Id == selectedId);
+            this.UpdateSessionButtons();
+        }
+
+        private void UpdateSessionButtons()
+        {
+            var record = this.SelectedSession;
+            bool canLoad = record != null && !this.running;
+
+            this.SessionOpenButton.IsEnabled = canLoad;
+            this.SessionResumeButton.IsEnabled = canLoad && record!.Files.Any(f => f.Status is not (FileStatus.Done or FileStatus.Skipped or FileStatus.Failed));
+            this.SessionRetryButton.IsEnabled = canLoad && record!.FailedCount > 0;
+            this.SessionRerunButton.IsEnabled = canLoad;
+            this.SessionExportButton.IsEnabled = record != null;
+            this.SessionLogButton.IsEnabled = record != null && System.IO.File.Exists(SessionStore.LogPath(record));
+            this.SessionDeleteButton.IsEnabled = canLoad && record!.Id != this.session?.Id;
+        }
+
+        private void SessionsTabItem_Selected(object sender, RoutedEventArgs e)
+        {
+            if (!this.running)
+            {
+                this.RefreshSessions();
+            }
+        }
+
+        private void SessionsListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            this.UpdateSessionButtons();
+        }
+
+        private void SessionsListView_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            this.SessionOpenButton_Click(sender, e);
+        }
+
+        private bool OpenSession(SessionRecord record)
+        {
+            if (this.running)
+            {
+                return false;
+            }
+
+            this.session = record;
+            this.UrlTextBox.Text = record.Url;
+            this.FolderTextBox.Text = record.Folder;
+            this.ApplyOptions(record.Options);
+            this.LoadItems(record.Restore());
+
+            this.logEntries.Clear();
+            string logPath = SessionStore.LogPath(record);
+
+            if (System.IO.File.Exists(logPath))
+            {
+                try
+                {
+                    using var stream = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                    using var reader = new StreamReader(stream);
+
+                    while (reader.ReadLine() is { } line)
+                    {
+                        if (LogEntry.Parse(line) is { } entry)
                         {
-                            this.Report($"Deleting file {Path.GetFileName(filePath)} because it does not exist in the Archive.org collection.");
-                            System.IO.File.Delete(filePath);
-                            deletedCount++;
-                        }
-                        catch (Exception ex)
-                        {
-                            this.Report($"Unable to delete file {Path.GetFileName(filePath)} from disk. - {ex.Message}", true);
-                            deletedErrorCount++;
+                            this.logEntries.Add(entry);
                         }
                     }
                 }
-
-                Parallel.ForEach(
-                    files,
-                    new ParallelOptions { MaxDegreeOfParallelism = threads },
-                    file =>
-                    {
-                        int current = Interlocked.Increment(ref count);
-
-                        this.Dispatcher.Invoke(
-                            () =>
-                            {
-                                this.ProgressBar.Value = current;
-                            });
-
-                        this.Report($"Reading disk file {file.Name}...");
-
-                        string destinationFilePath = Path.Combine(folder, file.Name);
-                        Directory.CreateDirectory(Path.GetDirectoryName(destinationFilePath) ?? throw new InvalidOperationException());
-
-                        if (System.IO.File.Exists(destinationFilePath))
-                        {
-                            if (destinationFilePath.EndsWith($"{collectionName}_files.xml") ||
-                                new FileInfo(destinationFilePath).Length == file.Size && MainWindow.ConfirmMd5(destinationFilePath, file.Md5))
-                            {
-                                this.Report($"File {file.Name} already exists with the correct file size and checksum. Skipping!");
-                                Interlocked.Increment(ref skippingCount);
-                                return;
-                            }
-
-                            this.Report($"Existing file {file.Name} has an incorrect file size or checksum! Re-downloading file...", true);
-                            System.IO.File.Delete(destinationFilePath);
-                        }
-                        else
-                        {
-                            this.Report($"File {file.Name} does not exist on disk! Downloading file...");
-                        }
-
-                        using (var client = new PatientWebClient())
-                        {
-                            try
-                            {
-                                client.DownloadFile($"https://archive.org/download/{collectionName}/{file.Name}", destinationFilePath);
-                            }
-                            catch (Exception ex)
-                            {
-                                this.Report($"An error occurred downloading file {file.Name}. - {ex.Message}", true);
-Interlocked.Increment(ref downloadErrorCount);
-                                return;
-                            }
-                        }
-
-                        if (destinationFilePath.EndsWith($"{collectionName}_files.xml") || MainWindow.ConfirmMd5(destinationFilePath, file.Md5))
-                        {
-                            this.Report($"File {file.Name} downloaded successfully and checksum confirmed!");
-                            Interlocked.Increment(ref downloadSuccessCount);
-                        }
-                        else
-                        {
-                            this.Report($"Checksum does not match on file {file.Name} after downloading!", true);
-                            Interlocked.Increment(ref downloadCorruptCount);
-                        }
-                    });
-
-                this.Report($"{count} file(s) from Archive.org were processed!", false, true);
-                this.Report($"{skippingCount} file(s) already existed with the correct file size and checksum.", false, true);
-                this.Report($"{downloadSuccessCount} file(s) were successfully downloaded.", false, true);
-                this.Report($"{downloadErrorCount} file(s) were not downloaded successfully.", downloadErrorCount > 0, downloadErrorCount == 0);
-                this.Report($"{downloadCorruptCount} file(s) had an incorrect checksum after downloading.", downloadCorruptCount > 0, downloadCorruptCount == 0);
-
-                if (deleteFiles)
+                catch (IOException)
                 {
-                    this.Report($"{deletedCount} file(s) were deleted because they are not in the Archive.org collection.", false, true);
-                    this.Report($"{deletedErrorCount} file(s) could not be deleted from the destination folder.", deletedErrorCount > 0, deletedErrorCount == 0);
                 }
+            }
 
-                this.Report("Process is complete!", false, true);
-                this.ChangeState(false);
-            });
+            this.SetStatus($"Opened session {record.Id} ({record.ResultText}).");
+            this.Tick();
+            this.UpdateButtons();
+            this.Tabs.SelectedIndex = 0;
+            return true;
         }
 
-        private static bool ConfirmMd5(string filePath, string md5Hash)
+        private void SessionOpenButton_Click(object sender, RoutedEventArgs e)
         {
-            using var stream = System.IO.File.OpenRead(filePath);
-            using var md5 = MD5.Create();
-            return string.Equals(Convert.ToHexString(md5.ComputeHash(stream)), md5Hash, StringComparison.OrdinalIgnoreCase);
+            if (this.SelectedSession is { } record)
+            {
+                this.OpenSession(record);
+            }
+        }
+
+        private async void SessionResumeButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (this.SelectedSession is { } record && this.OpenSession(record))
+            {
+                await this.RunAsync(false, i => i.CurrentStatus == FileStatus.Queued);
+            }
+        }
+
+        private async void SessionRetryButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (this.SelectedSession is { } record && this.OpenSession(record))
+            {
+                await this.RunAsync(false, i => i.CurrentStatus is FileStatus.Failed or FileStatus.Queued);
+            }
+        }
+
+        private void SessionRerunButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (this.SelectedSession is not { } record || this.running)
+            {
+                return;
+            }
+
+            this.UrlTextBox.Text = record.Url;
+            this.FolderTextBox.Text = record.Folder;
+            this.ApplyOptions(record.Options);
+            this.Tabs.SelectedIndex = 0;
+            this.StartButton_Click(sender, e);
+        }
+
+        private void SessionExportButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (this.SelectedSession is not { } record)
+            {
+                return;
+            }
+
+            var dialog = new Microsoft.Win32.SaveFileDialog
+            {
+                FileName = record.Id + ".csv",
+                Filter = "CSV files (*.csv)|*.csv",
+                DefaultExt = ".csv"
+            };
+
+            if (dialog.ShowDialog(this) == true)
+            {
+                SessionStore.ExportCsv(record, dialog.FileName);
+            }
+        }
+
+        private void SessionLogButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (this.SelectedSession is { } record && System.IO.File.Exists(SessionStore.LogPath(record)))
+            {
+                MainWindow.OpenWithShell(SessionStore.LogPath(record));
+            }
+        }
+
+        private void SessionDeleteButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (this.SelectedSession is not { } record
+                || MessageBox.Show(this, $"Delete session {record.Id} and its log? Downloaded files are not touched.", "Delete Session", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            {
+                return;
+            }
+
+            SessionStore.Delete(record);
+            this.RefreshSessions();
+        }
+
+        private void SessionsFolderButton_Click(object sender, RoutedEventArgs e)
+        {
+            Directory.CreateDirectory(SessionStore.Folder);
+            MainWindow.OpenWithShell(SessionStore.Folder);
+        }
+
+        // ----- Log tab -----
+
+        private bool FilterLogEntry(object value)
+        {
+            var entry = (LogEntry)value;
+
+            bool levelVisible = entry.Level switch
+            {
+                LogLevel.Debug => this.LogDebugToggle.IsChecked == true,
+                LogLevel.Warn => this.LogWarnToggle.IsChecked == true,
+                LogLevel.Error => this.LogErrorToggle.IsChecked == true,
+                _ => this.LogInfoToggle.IsChecked == true
+            };
+
+            string search = this.LogSearchTextBox.Text.Trim();
+            return levelVisible
+                && (search.Length == 0
+                    || entry.Message.Contains(search, StringComparison.OrdinalIgnoreCase)
+                    || entry.File.Contains(search, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private void LogFilter_Changed(object sender, RoutedEventArgs e)
+        {
+            if (this.IsLoaded)
+            {
+                this.logView.Refresh();
+            }
         }
 
         private void LogTabItem_Selected(object sender, RoutedEventArgs e)
         {
-            this.LogListBox.ScrollIntoView(this.LogListBox.SelectedItem);
+            if (this.AutoScrollCheckBox.IsChecked == true && this.logView.Count > 0)
+            {
+                this.LogListView.ScrollIntoView(this.logView.GetItemAt(this.logView.Count - 1));
+            }
+        }
+
+        private void LogCopyButton_Click(object sender, RoutedEventArgs e)
+        {
+            var selected = this.LogListView.SelectedItems.Count > 0
+                ? this.LogListView.SelectedItems.OfType<LogEntry>().OrderBy(this.logEntries.IndexOf)
+                : this.logView.OfType<LogEntry>();
+
+            string text = string.Join(Environment.NewLine, selected.Select(l => l.ToString()));
+
+            if (text.Length > 0)
+            {
+                Clipboard.SetText(text);
+            }
+        }
+
+        private void LogSaveButton_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new Microsoft.Win32.SaveFileDialog
+            {
+                FileName = (this.session?.Id ?? "log") + ".log",
+                Filter = "Log files (*.log)|*.log|Text files (*.txt)|*.txt",
+                DefaultExt = ".log"
+            };
+
+            if (dialog.ShowDialog(this) == true)
+            {
+                System.IO.File.WriteAllLines(dialog.FileName, this.logView.OfType<LogEntry>().Select(l => l.ToString()));
+            }
+        }
+
+        private void LogClearButton_Click(object sender, RoutedEventArgs e)
+        {
+            this.logEntries.Clear();
+        }
+
+        private void Window_Closing(object sender, CancelEventArgs e)
+        {
+            this.SaveSettings();
+
+            if (!this.running)
+            {
+                return;
+            }
+
+            if (MessageBox.Show(this, "A sync is running. Pause it and exit? Partial downloads are kept and you can resume from the Sessions tab.", "Exit", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            {
+                e.Cancel = true;
+                return;
+            }
+
+            // Let RunAsync save the session as paused, then close from there.
+            e.Cancel = true;
+            this.closeAfterRun = true;
+            this.SetStatus("Pausing before exit…");
+            this.cancellation?.Cancel();
         }
     }
 }

@@ -77,7 +77,7 @@ namespace ArchiveOrgCollectionSync
         {
             FileStatus.Queued => "·",
             FileStatus.Checking => "…",
-            FileStatus.Downloading => "⬇",
+            FileStatus.Downloading => "↓",
             FileStatus.Verifying => "🔍",
             FileStatus.Done => "✔",
             FileStatus.Skipped => "↷",
