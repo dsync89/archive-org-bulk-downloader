@@ -1,79 +1,136 @@
-# Archive.org Collection Sync
+# Archive.org Bulk Downloader: download entire Internet Archive collections, fast and resumable
 
-Download and sync collections from archive.org to a local folder. Files download in parallel, large files are split
-across several connections, and interrupted downloads resume. Every file is checked against the collection's
-checksums.
+**Archive.org Bulk Downloader** is a free, open-source Windows app (GUI, no command line). It downloads and syncs whole
+**archive.org / Internet Archive** collections and items to a local folder:
+- **parallel downloads**, with several files at once and several connections per file;
+- **resume** after pause, crash or reboot;
+- **MD5 checksum verification**;
+- a live, TeraCopy-style file list with speed and ETA.
 
-> **Fork notice:** this project is a fork of
-> [jasonunbrokensoftware/ArchiveOrgCollectionSync](https://github.com/jasonunbrokensoftware/ArchiveOrgCollectionSync)
-> by Jason / Unbroken Software, LLC. Version 1.3 adds the parallel, resumable download engine and the TeraCopy-style
-> file list, sessions and log described below. All credit for the original app goes to the upstream author.
+Paste a collection URL, pick a folder and press Start.
 
-![Archive.org Collection Sync 1.3 syncing a collection](docs/screenshot.png)
+**[⬇ Download the latest release (Windows .exe)](https://github.com/dsync89/archive-org-bulk-downloader/releases/latest)**
 
-## What's new in 1.3
+![Archive.org Bulk Downloader syncing an Internet Archive collection with parallel multi-connection downloads](docs/screenshot.png)
 
-- **Faster downloads**
-  - Several files download at once ("Files in parallel").
-  - Files of 32 MB or more are split into HTTP `Range` segments over several connections ("Connections per file").
-- **Resumable downloads.** Data goes into `<name>.part`, with a `<name>.part.json` segment map. Pause, a crash or
-  closing the app keeps the partial file, and the next run continues where it stopped.
-- **TeraCopy-style file list.** Every file from the collection appears in a grid with:
-  - status, size, a per-file progress bar showing its connection count, speed and ETA;
-  - filters with live counts (All / Active / Queued / Done / Skipped / Failed) and a search box;
-  - a right-click menu: open folder, copy name or URL, retry selected.
-- **Overall progress.** The bottom bar shows files and bytes done, speed, ETA and open connections, with Start,
-  Pause/Resume, Stop and Retry Failed buttons. Progress also appears on the taskbar and in the window title.
-- **Sessions tab.** A history of every run, with Open, Resume, Retry Failed, Re-run, Export CSV, Open Log and Delete.
-  Closing the app during a sync pauses and saves the session.
-- **Log tab.** Level toggles (Debug/Info/Warn/Error), search, auto-scroll, copy and save. Each session also writes its
-  own log file.
-- **Remembered settings.** The last URL, folder and options are kept between runs.
-- **Fixes:**
-  - thread-safe counters;
-  - an O(n) delete scan;
-  - case-insensitive MD5 comparison;
-  - proper URL parsing;
-  - `<collection>_files.xml` (which has no size in the file list) now downloads correctly.
+> Forked from [Archive.org Collection Sync](https://github.com/jasonunbrokensoftware/ArchiveOrgCollectionSync) by
+> Jason / Unbroken Software, LLC. See [Credits](#credits).
 
-## Usage
+## Features
 
-1. Paste a collection URL, either `https://archive.org/details/<collection>` or
-   `https://archive.org/download/<collection>`.
-2. Pick a destination folder.
-3. Choose the options and press **Start**.
+- **Bulk download a whole archive.org collection or item.** Every file listed in the item's `_files.xml` is included,
+  and nested folders are kept.
+- **Multi-connection (segmented) downloads.** Large files are split into HTTP `Range` segments and fetched over
+  several connections at once, like IDM or aria2.
+- **Parallel downloads.** Several files download at the same time.
+- **Resume interrupted downloads.** Pause, crash, network drop or closing the app keeps `.part` files, and the next
+  run continues where it stopped.
+- **MD5 checksum verification** against archive.org's own checksums. A corrupt download never overwrites a good file.
+- **Sync / mirror mode:**
+  - re-running skips files that are already correct;
+  - files with the wrong size or checksum download again;
+  - optionally, files that are no longer in the collection are deleted.
+- **TeraCopy-style progress.** Each file shows status, size, a progress bar, speed and ETA, with filters (Active /
+  Queued / Done / Skipped / Failed) and search. Overall speed and ETA show in the bottom bar and on the taskbar.
+- **Session history.** Resume, retry failed files, re-run or export to CSV from any past session.
+- **Detailed log** with levels, search, copy and save, plus a log file per session.
+- **Polite to archive.org.** It retries with backoff and honours `Retry-After` on HTTP 429/503.
+- **"Originals only"** skips derivative files (thumbnails, torrents, metadata) that archive.org generates.
 
-Files already on disk with the right size and checksum are skipped. Files with the wrong size or checksum are
-downloaded again and only replace the old copy once the new one verifies.
+## Download and install
+
+1. Download `ArchiveOrgBulkDownloader-<version>-win-x64.exe` from
+   [Releases](https://github.com/dsync89/archive-org-bulk-downloader/releases/latest).
+2. Make sure the [.NET Desktop Runtime](https://dotnet.microsoft.com/download) 6.0 or newer is installed; 8.0 or 9.0
+   is fine. Windows will offer to install it if it's missing.
+3. Run the exe. No installer, no admin rights.
+
+## How to use
+
+1. Copy the collection or item URL from archive.org, either `https://archive.org/details/<identifier>` or
+   `https://archive.org/download/<identifier>`.
+2. Paste it, choose a destination folder and press **Start**.
+3. Watch the file list. **Pause** keeps partial files; **Resume** continues; **Retry Failed** re-tries only failures.
 
 ### Options
 
-| Option | Default | Notes |
+| Option | Default | What it does |
 |---|---|---|
-| Files in parallel | 4 | 1–16. How many files download at the same time. |
-| Connections per file | 4 | 1–16. Ranged connections for files of 32 MB or more; smaller files use one. |
-| Verify | MD5 checksum | **Size only** is much faster when re-checking a large existing folder. |
-| Originals only | on | Skips derivatives that archive.org generates (thumbnails, torrents, `_meta.xml`…). |
-| Delete files not in the collection | off | Deletes other files under the destination; in-progress `.part` files are kept. |
+| Files in parallel | 4 | 1–16 files downloading at the same time. |
+| Connections per file | 4 | 1–16 ranged connections for files of 32 MB or more; smaller files use one. |
+| Verify | MD5 checksum | **Size only** is much faster when re-checking a big existing folder. |
+| Originals only | on | Skip archive.org-generated derivatives (thumbnails, torrents, `_meta.xml`…). |
+| Delete files not in the collection | off | Mirror mode: delete extra files under the destination (in-progress `.part` files are kept). |
 
-**Picking the parallelism.** The total number of connections is files × connections (4 × 4 = 16 by default).
-archive.org publishes no hard limit, but it throttles heavy clients with HTTP 429 or 503. Past a few connections per
-file your own line is usually the bottleneck. In testing, 4 connections beat both 1 and 8.
+## FAQ
 
-### Where data is stored
+### How do I download an entire archive.org collection at once?
+
+Paste the item's `https://archive.org/details/<identifier>` URL, pick a folder and press **Start**. The app reads the
+item's file list and downloads every file, keeping nested folders.
+
+### Why are archive.org downloads so slow, and how do I make them faster?
+
+archive.org usually limits the speed of a single connection, so one big file on one connection is slow even on a fast
+line. Raise **Connections per file** to split large files over several connections, and **Files in parallel** to
+download more files at once.
+
+Start with the defaults (4 × 4) and go up gradually. Beyond a few connections per file your own bandwidth is usually
+the limit, and archive.org may throttle very aggressive clients.
+
+### How many connections per file should I use?
+
+4 is a good default; 6 is a sensible maximum for most people. The total number of connections is files ×
+connections per file. Watch the speed in the bottom bar and stop increasing once it stops going up.
+
+### Can I resume an interrupted archive.org download?
+
+Yes. Partial data is kept in `<file>.part` with a small `<file>.part.json` progress map. Press **Resume**, use
+**Sessions → Resume** after restarting the app, or simply run the same URL again.
+
+### How do I keep a local copy in sync with an archive.org collection?
+
+Run the same URL and folder again. Correct files are skipped, changed or corrupt ones download again, and with
+**Delete files not in the collection** your folder mirrors the collection exactly. Use **Verify: Size only** for a
+fast re-check.
+
+### How do I check that archive.org downloads aren't corrupt?
+
+With **Verify: MD5 checksum**, every downloaded file is hashed and compared with the MD5 archive.org publishes. A
+mismatch is reported as failed and the bad copy is discarded.
+
+### Does it work for ROM, software, video and audio collections?
+
+Yes. It downloads whatever files the item lists, of any type, for example TeknoParrot / MAME / No-Intro ROM sets,
+software, videos and music. Only download content you have the right to.
+
+### Does it download from the Wayback Machine?
+
+No. It downloads archive.org **items and collections** (`/details/` and `/download/` URLs), not archived web pages.
+
+## When to use what
+
+- **This app:** a Windows GUI for bulk downloading whole items with parallel and multi-connection downloads, resume,
+  MD5 verification and a live file list.
+- **[`ia` CLI (internetarchive)](https://github.com/jjjake/internetarchive):** the official Python command-line tool,
+  best for scripting, searching and uploading.
+- **wget / curl:** fine for a handful of known file URLs from a terminal.
+- **JDownloader / IDM:** general-purpose download managers, if you already use one for everything else.
+
+## Where data is stored
 
 | Path | Contents |
 |---|---|
 | `%LocalAppData%\ArchiveOrgCollectionSync\settings.json` | Last URL, folder and options |
-| `%LocalAppData%\ArchiveOrgCollectionSync\sessions\<yyyyMMdd_HHmmss>_<collection>.json` | Session history (per-file status) |
+| `%LocalAppData%\ArchiveOrgCollectionSync\sessions\<yyyyMMdd_HHmmss>_<identifier>.json` | Session history (per-file status) |
 | `%LocalAppData%\ArchiveOrgCollectionSync\sessions\<…>.log` | Session log (tab-separated) |
 | `<destination>\<file>.part`, `.part.json` | In-progress download and its resume map |
 
-## How it works
+## How it works (technical spec)
 
 ### Scan
 
-The app fetches `https://archive.org/download/<collection>/<collection>_files.xml` and reads each file's `name`,
+The app fetches `https://archive.org/download/<identifier>/<identifier>_files.xml` and reads each file's `name`,
 `source`, `size` and `md5`.
 
 ### Download engine (`DownloadEngine.cs`)
@@ -96,27 +153,30 @@ The app fetches `https://archive.org/download/<collection>/<collection>_files.xm
 The UI never blocks the workers. They update thread-safe counters, and a 250 ms timer publishes those to the grid,
 the totals and the log.
 
-## Requirements and building
+## Building from source
 
-- Windows with the [.NET 6 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/6.0) or newer.
-- Build with the .NET SDK 6 or newer:
+Requires the .NET SDK 6.0 or newer on Windows.
 
 ```
 dotnet build ArchiveOrgCollectionSync/ArchiveOrgCollectionSync.csproj -c Release
 dotnet publish ArchiveOrgCollectionSync/ArchiveOrgCollectionSync.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true
 ```
 
-The About tab shows the version plus the git commit it was built from, e.g. `1.3.0 (fe76d11)`.
+The About tab shows the version and the git commit it was built from, e.g. `1.3.0 (fe76d11)`.
 
 ## Credits
 
 - **Original app:** [Archive.org Collection Sync](https://github.com/jasonunbrokensoftware/ArchiveOrgCollectionSync)
   by Jason / Unbroken Software, LLC. That covers the collection sync concept, the checksum comparison, nested folders,
   the delete-extra-files option and simultaneous downloads.
-- **1.3 fork:** [dsync89](https://github.com/dsync89) added the parallel/segmented/resumable engine, the file list,
-  sessions and the log.
+- **Archive.org Bulk Downloader (1.3+):** [dsync89](https://github.com/dsync89) added the parallel, segmented and
+  resumable download engine, the file list, sessions and the log.
 - Folder picker: [WindowsAPICodePack](https://www.nuget.org/packages/WindowsAPICodePack).
+- Thanks to the [Internet Archive](https://archive.org). Consider [donating](https://archive.org/donate) if you use it
+  heavily.
 
 ## License
 
 MIT License, unchanged from upstream. See [LICENSE](LICENSE). Copyright (c) Unbroken Software, LLC.
+
+<!-- Keywords: archive.org downloader, internet archive downloader, archive.org bulk download, download entire archive.org collection, archive.org collection downloader, internet archive bulk downloader, archive.org multi-connection downloader, resume archive.org download, archive.org sync, windows -->
