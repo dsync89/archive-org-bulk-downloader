@@ -89,6 +89,14 @@ namespace ArchiveOrgCollectionSync
 
         public bool IsFinal => this.Status is FileStatus.Done or FileStatus.Skipped or FileStatus.Failed;
 
+        /// <summary>Restores a row from session history (UI thread, before any engine run).</summary>
+        public void Restore(FileStatus status, string? message)
+        {
+            this.SetState(status, message);
+            this.SetBytes(status is FileStatus.Done or FileStatus.Skipped ? this.Size : 0);
+            this.Refresh(0);
+        }
+
         internal void SetState(FileStatus status, string? message = null)
         {
             this.detail = message;
