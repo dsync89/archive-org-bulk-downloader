@@ -1,6 +1,7 @@
 ﻿namespace ArchiveOrgCollectionSync
 {
     using System;
+    using System.Collections.Generic;
     using System.IO;
     using System.Linq;
     using System.Security.Cryptography;
@@ -65,27 +66,12 @@
 
         private void StartButton_Click(object sender, RoutedEventArgs e)
         {
-            string collectionName;
+            string? collectionName = MainWindow.ParseCollectionName(this.UrlTextBox.Text);
 
-            if (this.UrlTextBox.Text.Trim().StartsWith("https://archive.org/download/", StringComparison.OrdinalIgnoreCase)
-                && this.UrlTextBox.Text.Length >= 30)
-            {
-                collectionName = this.UrlTextBox.Text.Trim()[29..];
-            }
-            else if (this.UrlTextBox.Text.Trim().StartsWith("https://archive.org/details/", StringComparison.OrdinalIgnoreCase)
-                && this.UrlTextBox.Text.Trim().Length >= 29)
-            {
-                collectionName = this.UrlTextBox.Text.Trim()[28..];
-            }
-            else
+            if (collectionName == null)
             {
                 MessageBox.Show(this, "Incorrect Archive.org Collection URL. A URL in the format of https://archive.org/details/<collection> or https://archive.org/download/<collection> is expected.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
-            }
-
-            if (collectionName.Contains('/'))
-            {
-                collectionName = collectionName[..collectionName.IndexOf("/", StringComparison.OrdinalIgnoreCase)];
             }
 
             string folder = this.FolderTextBox.Text.Trim();
@@ -97,6 +83,25 @@
             }
 
             this.Start(collectionName, folder, this.DeleteFilesCheckBox.IsChecked == true, this.MaxDownloadsNumericUpDown.Value);
+        }
+
+        public static string? ParseCollectionName(string url)
+        {
+            if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri)
+                || !uri.Host.EndsWith("archive.org", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            string[] segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+
+            if (segments.Length < 2
+                || !(segments[0].Equals("details", StringComparison.OrdinalIgnoreCase) || segments[0].Equals("download", StringComparison.OrdinalIgnoreCase)))
+            {
+                return null;
+            }
+
+            return Uri.UnescapeDataString(segments[1]);
         }
 
         private void ChangeState(bool running)
@@ -194,11 +199,13 @@
 
                 if (deleteFiles)
                 {
+                    var collectionFileNames = new HashSet<string>(files.Select(f => f.Name), StringComparer.OrdinalIgnoreCase);
+
                     foreach (string filePath in Directory.GetFiles(folder, "*.*", SearchOption.AllDirectories))
                     {
-                        string relativeFilePath = filePath.Replace(folder + "\\", string.Empty).Replace('\\', '/');
+                        string relativeFilePath = Path.GetRelativePath(folder, filePath).Replace('\\', '/');
 
-                        if (files.Any(f => string.Equals(f.Name, relativeFilePath, StringComparison.OrdinalIgnoreCase)))
+                        if (collectionFileNames.Contains(relativeFilePath))
                         {
                             continue;
                         }
@@ -222,12 +229,12 @@
                     new ParallelOptions { MaxDegreeOfParallelism = threads },
                     file =>
                     {
-                        count++;
+                        int current = Interlocked.Increment(ref count);
 
                         this.Dispatcher.Invoke(
                             () =>
                             {
-                                this.ProgressBar.Value = count;
+                                this.ProgressBar.Value = current;
                             });
 
                         this.Report($"Reading disk file {file.Name}...");
@@ -241,7 +248,7 @@
                                 new FileInfo(destinationFilePath).Length == file.Size && MainWindow.ConfirmMd5(destinationFilePath, file.Md5))
                             {
                                 this.Report($"File {file.Name} already exists with the correct file size and checksum. Skipping!");
-                                skippingCount++;
+                                Interlocked.Increment(ref skippingCount);
                                 return;
                             }
 
@@ -262,7 +269,7 @@
                             catch (Exception ex)
                             {
                                 this.Report($"An error occurred downloading file {file.Name}. - {ex.Message}", true);
-                                downloadErrorCount++;
+Interlocked.Increment(ref downloadErrorCount);
                                 return;
                             }
                         }
@@ -270,12 +277,12 @@
                         if (destinationFilePath.EndsWith($"{collectionName}_files.xml") || MainWindow.ConfirmMd5(destinationFilePath, file.Md5))
                         {
                             this.Report($"File {file.Name} downloaded successfully and checksum confirmed!");
-                            downloadSuccessCount++;
+                            Interlocked.Increment(ref downloadSuccessCount);
                         }
                         else
                         {
                             this.Report($"Checksum does not match on file {file.Name} after downloading!", true);
-                            downloadCorruptCount++;
+                            Interlocked.Increment(ref downloadCorruptCount);
                         }
                     });
 
@@ -300,7 +307,7 @@
         {
             using var stream = System.IO.File.OpenRead(filePath);
             using var md5 = MD5.Create();
-            return BitConverter.ToString(md5.ComputeHash(stream)).Replace("-", "").ToLowerInvariant() == md5Hash;
+            return string.Equals(Convert.ToHexString(md5.ComputeHash(stream)), md5Hash, StringComparison.OrdinalIgnoreCase);
         }
 
         private void LogTabItem_Selected(object sender, RoutedEventArgs e)
