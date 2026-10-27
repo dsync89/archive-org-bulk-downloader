@@ -46,7 +46,8 @@ jobs:
           $name = "ArchiveOrgBulkDownloader-$env:VERSION-win-x64.exe"
           Move-Item publish/ArchiveOrgCollectionSync.exe $name
           $hash = (Get-FileHash $name -Algorithm SHA256).Hash.ToLowerInvariant()
-          Set-Content "$name.sha256" "$hash  $name" -Encoding ascii
+          # LF line ending so `sha256sum -c` works on Linux/macOS too.
+          [IO.File]::WriteAllText("$PWD/$name.sha256", "$hash  $name`n")
           "ASSET=$name" >> $env:GITHUB_ENV
           "SHA256=$hash" >> $env:GITHUB_ENV
 
