@@ -5,7 +5,7 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:local="clr-namespace:ArchiveOrgCollectionSync"
     mc:Ignorable="d"
-    Title="Archive.org Collection Sync"
+    Title="Archive.org Bulk Downloader"
     Height="700"
     Width="1080"
     MinHeight="480"
@@ -214,7 +214,9 @@
                 <ScrollViewer>
                     <StackPanel Margin="10">
                         <TextBlock TextWrapping="Wrap" FontStyle="Italic">But God showed his great love for us by sending Christ to die for us while we were still sinners. - Romans 5:8 (NLT)</TextBlock>
-                        <TextBlock x:Name="VersionTextBlock" TextWrapping="Wrap" Margin="0,10,0,0">Version 1.3</TextBlock>
+                        <TextBlock TextWrapping="Wrap" Margin="0,10,0,0" FontWeight="Bold">Archive.org Bulk Downloader</TextBlock>
+                        <TextBlock x:Name="VersionTextBlock" TextWrapping="Wrap" Margin="0,4,0,0">Version 1.3</TextBlock>
+                        <TextBlock TextWrapping="Wrap" Margin="0,10,0,0">Fork of Archive.org Collection Sync by Unbroken Software, LLC (github.com/jasonunbrokensoftware/ArchiveOrgCollectionSync). Parallel, segmented and resumable downloads, file list, sessions and log by dsync89 (github.com/dsync89/archive-org-bulk-downloader).</TextBlock>
                         <TextBlock TextWrapping="Wrap" Margin="0,10,0,0">MIT License</TextBlock>
                         <TextBlock TextWrapping="Wrap" Margin="0,10,0,0">Copyright (c) 2023 Unbroken Software, LLC</TextBlock>
                         <TextBlock TextWrapping="Wrap" Margin="0,10,0,0">Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:</TextBlock>

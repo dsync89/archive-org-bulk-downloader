@@ -149,7 +149,7 @@ namespace ArchiveOrgCollectionSync
             };
 
             var client = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("ArchiveOrgCollectionSync/1.3");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("ArchiveOrgBulkDownloader/1.3 (+https://github.com/dsync89/archive-org-bulk-downloader)");
             return client;
         }
 

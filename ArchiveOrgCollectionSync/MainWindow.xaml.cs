@@ -438,7 +438,7 @@
             this.Taskbar.ProgressState = !this.running ? TaskbarItemProgressState.None
                 : failed > 0 ? TaskbarItemProgressState.Error
                 : TaskbarItemProgressState.Normal;
-            this.Title = this.running ? $"{fraction:0%} · Archive.org Collection Sync" : "Archive.org Collection Sync";
+            this.Title = this.running ? $"{fraction:0%} · Archive.org Bulk Downloader" : "Archive.org Bulk Downloader";
         }
 
         private void DrainLog()
