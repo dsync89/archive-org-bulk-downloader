@@ -211,11 +211,60 @@
             }
 
             this.SaveSettings();
-            this.session = SessionStore.Create(url, collectionName, folder, this.ReadOptions());
+            var options = this.ReadOptions();
+
+            if (sender != this.VerifyAllButton && this.FindUnfinishedSession(collectionName, folder) is { } unfinished)
+            {
+                int failed = unfinished.FailedCount;
+                int notFinished = unfinished.Files.Count(f => f.Status is not (FileStatus.Done or FileStatus.Skipped or FileStatus.Failed));
+                var answer = MessageBox.Show(
+                    this,
+                    $"An unfinished session for {collectionName} in this folder exists (started {unfinished.WhenText}): {failed} failed, {notFinished} not finished.\n\n"
+                    + "Yes: continue it (retry failed files, resume partial downloads).\n"
+                    + "No: start a new scan (files verified earlier are still skipped without re-checking).\n"
+                    + "Cancel: do nothing.",
+                    "Continue Session?",
+                    MessageBoxButton.YesNoCancel,
+                    MessageBoxImage.Question);
+
+                if (answer == MessageBoxResult.Cancel)
+                {
+                    return;
+                }
+
+                if (answer == MessageBoxResult.Yes && this.OpenSession(unfinished))
+                {
+                    // Keep the options currently chosen in the UI rather than the ones saved with the session.
+                    this.ApplyOptions(options);
+                    unfinished.Options = options;
+                    await this.RunAsync(false, i => i.CurrentStatus is FileStatus.Failed or FileStatus.Queued);
+                    return;
+                }
+            }
+
+            this.session = SessionStore.Create(url, collectionName, folder, options);
             this.LoadItems(Array.Empty<FileItem>());
             this.logEntries.Clear();
 
-            await this.RunAsync(true, i => i.CurrentStatus == FileStatus.Queued);
+            await this.RunAsync(true, i => i.CurrentStatus == FileStatus.Queued, sender == this.VerifyAllButton);
+        }
+
+        private void VerifyAllButton_Click(object sender, RoutedEventArgs e)
+        {
+            this.StartButton_Click(sender, e);
+        }
+
+        private SessionRecord? FindUnfinishedSession(string collection, string folder)
+        {
+            string fullFolder = Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar);
+
+            // Only the latest session for this collection and folder counts; an older one superseded by a newer scan
+            // shouldn't keep asking.
+            var latest = SessionStore.LoadAll().FirstOrDefault(r =>
+                r.Collection.Equals(collection, StringComparison.OrdinalIgnoreCase)
+                && Path.GetFullPath(r.Folder).TrimEnd(Path.DirectorySeparatorChar).Equals(fullFolder, StringComparison.OrdinalIgnoreCase));
+
+            return latest != null && latest.Files.Any(f => f.Status is not (FileStatus.Done or FileStatus.Skipped)) ? latest : null;
         }
 
         private async void PauseButton_Click(object sender, RoutedEventArgs e)
@@ -246,7 +295,7 @@
         /// Runs the current session: optionally scans the collection first, then downloads the items matching
         /// <paramref name="selector"/>. Pause, Stop and errors all end here with the session saved.
         /// </summary>
-        private async Task RunAsync(bool scan, Func<FileItem, bool> selector)
+        private async Task RunAsync(bool scan, Func<FileItem, bool> selector, bool reverifyAll = false)
         {
             if (this.running || this.session == null)
             {
@@ -257,7 +306,8 @@
             this.running = true;
             this.stopRequested = false;
             this.cancellation = new CancellationTokenSource();
-            this.engine = new DownloadEngine(current.Options, this.log);
+            var ledger = VerifiedLedger.Load(current.Folder);
+            this.engine = new DownloadEngine(current.Options, this.log, ledger, reverifyAll);
             this.lastBytesReceived = 0;
             this.overallSpeed = 0;
             this.sessionBaseBytes = current.BytesDownloaded;
@@ -266,6 +316,11 @@
             current.State = SessionState.Running;
             current.Ended = null;
             this.log.Open(SessionStore.LogPath(current));
+            this.log.Write(
+                LogLevel.Info,
+                reverifyAll
+                    ? "Verify All: every existing file is MD5-checked again, ignoring earlier verifications."
+                    : $"{ledger.Count} file(s) in this folder were verified in earlier runs; unchanged ones are skipped without re-checking.");
             this.UpdateButtons();
 
             var token = this.cancellation.Token;
@@ -535,6 +590,7 @@
             bool hasFailed = this.items.Any(i => i.CurrentStatus == FileStatus.Failed);
 
             this.StartButton.IsEnabled = !this.running && hasInput;
+            this.VerifyAllButton.IsEnabled = !this.running && hasInput;
             bool canResume = !this.running && this.session != null && hasQueued;
             this.PauseButton.Content = canResume ? "Resume" : "Pause";
             this.PauseButton.IsEnabled = this.running || canResume;
