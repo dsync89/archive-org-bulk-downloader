@@ -280,7 +280,7 @@
 
                     File[] files = await DownloadEngine.FetchFileListAsync(current.Collection, token);
                     var wanted = current.Options.OriginalsOnly
-                        ? files.Where(f => f.Source.Length == 0 || f.Source.Equals("original", StringComparison.OrdinalIgnoreCase)).ToArray()
+                        ? files.Where(f => !f.OldVersion && (f.Source.Length == 0 || f.Source.Equals("original", StringComparison.OrdinalIgnoreCase))).ToArray()
                         : files;
 
                     this.LoadItems(wanted.Select(f => new FileItem(f)));
@@ -304,6 +304,11 @@
                 }
 
                 var queue = this.items.Where(selector).ToList();
+
+                if (!scan && queue.Count > 0)
+                {
+                    await this.RefreshFileListAsync(current, queue, token);
+                }
 
                 foreach (var item in queue.Where(i => i.CurrentStatus == FileStatus.Failed))
                 {
@@ -358,6 +363,50 @@
             {
                 this.Close();
             }
+        }
+
+        /// <summary>
+        /// Re-reads the collection's file list before a resume or retry. Uploaders replace files and archive.org
+        /// regenerates its metadata files, so the size and MD5 saved at scan time can be stale and would fail forever.
+        /// </summary>
+        private async Task RefreshFileListAsync(SessionRecord current, List<FileItem> queue, CancellationToken token)
+        {
+            this.SetStatus("Refreshing the file list from archive.org…");
+            var latest = new Dictionary<string, File>(StringComparer.OrdinalIgnoreCase);
+
+            try
+            {
+                foreach (var file in await DownloadEngine.FetchFileListAsync(current.Collection, token))
+                {
+                    latest.TryAdd(file.Name, file);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                this.log.Write(LogLevel.Warn, $"Could not refresh the file list; using the one saved with the session. - {ex.Message}");
+                return;
+            }
+
+            int changed = 0;
+            int removed = 0;
+
+            foreach (var item in queue.ToList())
+            {
+                if (!latest.TryGetValue(item.Name, out var file))
+                {
+                    item.Restore(FileStatus.Failed, "no longer in the collection");
+                    queue.Remove(item);
+                    this.log.Write(LogLevel.Warn, "No longer in the collection on archive.org; skipped.", item.Name);
+                    removed++;
+                }
+                else if (item.UpdateFrom(file))
+                {
+                    this.log.Write(LogLevel.Info, $"Changed on archive.org since the scan; now {Format.Bytes(item.Size)}, using the new size and checksum.", item.Name);
+                    changed++;
+                }
+            }
+
+            this.log.Write(LogLevel.Info, $"File list refreshed: {changed} file(s) changed, {removed} no longer listed.");
         }
 
         private void Tick()

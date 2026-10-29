@@ -42,12 +42,12 @@ namespace ArchiveOrgCollectionSync
 
         public string Name { get; }
 
-        public long Size { get; }
+        public long Size { get; private set; }
 
         /// <summary>Gets a value indicating whether the file list gave a size (it doesn't for &lt;collection&gt;_files.xml).</summary>
-        public bool HasSize { get; }
+        public bool HasSize { get; private set; }
 
-        public string Md5 { get; }
+        public string Md5 { get; private set; }
 
         public string SizeText => this.HasSize ? Format.Bytes(this.Size) : string.Empty;
 
@@ -88,6 +88,26 @@ namespace ArchiveOrgCollectionSync
         public bool IsActive => this.Status is FileStatus.Checking or FileStatus.Downloading or FileStatus.Verifying;
 
         public bool IsFinal => this.Status is FileStatus.Done or FileStatus.Skipped or FileStatus.Failed;
+
+        /// <summary>
+        /// Takes the size and checksum from a fresh file list, because files in an item can be replaced after the scan.
+        /// UI thread, only between engine runs.
+        /// </summary>
+        /// <returns>True when the file changed on archive.org.</returns>
+        public bool UpdateFrom(File file)
+        {
+            if (this.Size == file.Size && this.HasSize == file.SizeSpecified && this.Md5 == file.Md5)
+            {
+                return false;
+            }
+
+            this.Size = file.Size;
+            this.HasSize = file.SizeSpecified;
+            this.Md5 = file.Md5;
+            this.OnPropertyChanged(nameof(this.Size));
+            this.OnPropertyChanged(nameof(this.SizeText));
+            return true;
+        }
 
         /// <summary>Restores a row from session history (UI thread, before any engine run).</summary>
         public void Restore(FileStatus status, string? message)

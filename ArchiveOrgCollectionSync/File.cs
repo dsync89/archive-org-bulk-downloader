@@ -24,6 +24,10 @@
         [XmlIgnore]
         public bool SizeSpecified { get; set; }
 
+        /// <summary>Gets or sets a value indicating whether this is a replaced copy archive.org keeps under history/.</summary>
+        [XmlElement("old_version")]
+        public bool OldVersion { get; set; }
+
         [XmlElement("md5")]
         public string Md5 { get; set; }
     }

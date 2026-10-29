@@ -349,7 +349,14 @@ namespace ArchiveOrgCollectionSync
                 return;
             }
 
-            string url = await DownloadEngine.ResolveAsync(DownloadEngine.FileUrl(collection, item.Name), ct);
+            var (url, remoteSize) = await DownloadEngine.ResolveAsync(DownloadEngine.FileUrl(collection, item.Name), ct);
+
+            if (remoteSize is { } size && size != item.Size)
+            {
+                throw new PermanentDownloadException(
+                    $"File changed on archive.org since the scan (now {Format.Bytes(size)}, list says {Format.Bytes(item.Size)}). Retry Failed refreshes the file list.");
+            }
+
             item.SetConnections(pending.Count);
             item.SetState(FileStatus.Downloading);
 
@@ -422,14 +429,15 @@ namespace ArchiveOrgCollectionSync
             }
         }
 
-        private static async Task<string> ResolveAsync(string url, CancellationToken ct)
+        /// <returns>The data-node URL and the file's current size on archive.org, when the server reports it.</returns>
+        private static async Task<(string Url, long? Size)> ResolveAsync(string url, CancellationToken ct)
         {
             // Follow the archive.org -> iaNNNNNN.us.archive.org redirect once, so segments go straight to the data node.
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Range = new RangeHeaderValue(0, 0);
             using var response = await DownloadEngine.Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
             DownloadEngine.EnsureSuccess(response);
-            return response.RequestMessage?.RequestUri?.AbsoluteUri ?? url;
+            return (response.RequestMessage?.RequestUri?.AbsoluteUri ?? url, response.Content.Headers.ContentRange?.Length);
         }
 
         private static async Task SaveStatePeriodicallyAsync(PartState state, string path, CancellationToken ct)
