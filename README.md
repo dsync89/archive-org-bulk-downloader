@@ -94,9 +94,21 @@ Yes. Partial data is kept in `<file>.part` with a small `<file>.part.json` progr
 
 ### How do I keep a local copy in sync with an archive.org collection?
 
-Run the same URL and folder again. Correct files are skipped, changed or corrupt ones download again, and with
-**Delete files not in the collection** your folder mirrors the collection exactly. Use **Verify: Size only** for a
-fast re-check.
+Press **Start** again with the same URL and folder. It works like JDownloader:
+- Every file that passed verification is remembered. If it's unchanged locally and on archive.org, it's skipped
+  instantly with no re-hashing.
+- Partial downloads resume.
+- Failed and missing files download.
+- Files changed on archive.org download again.
+- If the last session for that folder is unfinished, Start asks whether to continue it or begin a new scan.
+- With **Delete files not in the collection**, your folder mirrors the collection exactly.
+
+Use **Verify All** to MD5-check every existing file again, for example if you suspect disk corruption.
+
+### Does Start re-check every file every time?
+
+No. Only files not verified before are checked: for example ones downloaded with another tool, or ones whose size
+or date changed. They're checked once, by MD5 or by size depending on **Verify**, and then remembered.
 
 ### How do I check that archive.org downloads aren't corrupt?
 
@@ -128,6 +140,7 @@ No. It downloads archive.org **items and collections** (`/details/` and `/downlo
 | `%LocalAppData%\ArchiveOrgCollectionSync\settings.json` | Last URL, folder and options |
 | `%LocalAppData%\ArchiveOrgCollectionSync\sessions\<yyyyMMdd_HHmmss>_<identifier>.json` | Session history (per-file status) |
 | `%LocalAppData%\ArchiveOrgCollectionSync\sessions\<…>.log` | Session log (tab-separated) |
+| `%LocalAppData%\ArchiveOrgCollectionSync\verified\<folder hash>.json` | Verified-files ledger per destination folder (skips re-hashing) |
 | `<destination>\<file>.part`, `.part.json` | In-progress download and its resume map |
 
 ## How it works (technical spec)
