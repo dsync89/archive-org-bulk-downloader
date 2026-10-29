@@ -55,15 +55,23 @@ namespace ArchiveOrgCollectionSync
 
         private readonly SyncOptions options;
         private readonly SyncLog log;
+        private readonly VerifiedLedger? ledger;
+        private readonly bool reverifyAll;
         private readonly SemaphoreSlim verifySlots = new(MaxConcurrentVerifies);
         private long bytesReceived;
         private int activeConnections;
 
-        public DownloadEngine(SyncOptions options, SyncLog log)
+        /// <param name="ledger">Files verified in earlier runs; they are skipped without hashing.</param>
+        /// <param name="reverifyAll">Ignore the ledger and MD5-check every existing file (Verify All).</param>
+        public DownloadEngine(SyncOptions options, SyncLog log, VerifiedLedger? ledger = null, bool reverifyAll = false)
         {
             this.options = options;
             this.log = log;
+            this.ledger = ledger;
+            this.reverifyAll = reverifyAll;
         }
+
+        private bool UseMd5 => this.reverifyAll || this.options.Verify == VerifyMode.Md5;
 
         public long BytesReceived => Interlocked.Read(ref this.bytesReceived);
 
@@ -135,7 +143,14 @@ namespace ArchiveOrgCollectionSync
                 },
                 CancellationToken.None));
 
-            await Task.WhenAll(workers);
+            try
+            {
+                await Task.WhenAll(workers);
+            }
+            finally
+            {
+                this.ledger?.Save();
+            }
         }
 
         private static HttpClient CreateClient()
@@ -201,14 +216,32 @@ namespace ArchiveOrgCollectionSync
 
                 if (System.IO.File.Exists(destination))
                 {
-                    if (isFileList || await this.MatchesAsync(destination, item, ct))
+                    if (isFileList)
                     {
                         item.SetBytes(item.Size);
-                        item.SetState(FileStatus.Skipped, "skipped (match)");
-                        this.log.Write(LogLevel.Debug, "Already exists with the correct size and checksum. Skipping.", item.Name);
+                        item.SetState(FileStatus.Skipped, "skipped (exists)");
                         return;
                     }
 
+                    if (!this.reverifyAll && this.ledger?.IsVerified(item, destination, this.UseMd5) == true)
+                    {
+                        item.SetBytes(item.Size);
+                        item.SetState(FileStatus.Skipped, "skipped (verified earlier)");
+                        this.log.Write(LogLevel.Debug, "Verified in an earlier run and unchanged. Skipping without re-checking.", item.Name);
+                        return;
+                    }
+
+                    if (await this.MatchesAsync(destination, item, ct))
+                    {
+                        bool hashed = this.UseMd5 && item.Md5.Length > 0;
+                        this.ledger?.Record(item, destination, hashed);
+                        item.SetBytes(item.Size);
+                        item.SetState(FileStatus.Skipped, hashed ? "skipped (md5 ok)" : "skipped (size ok)");
+                        this.log.Write(LogLevel.Debug, hashed ? "Already exists with the correct checksum. Skipping." : "Already exists with the correct size. Skipping.", item.Name);
+                        return;
+                    }
+
+                    this.ledger?.Remove(item.Name);
                     this.log.Write(LogLevel.Warn, "Existing file has an incorrect size or checksum. Re-downloading.", item.Name);
                 }
 
@@ -237,7 +270,7 @@ namespace ArchiveOrgCollectionSync
 
                 string verified = "done";
 
-                if (!isFileList && this.options.Verify == VerifyMode.Md5 && item.Md5.Length > 0)
+                if (!isFileList && this.UseMd5 && item.Md5.Length > 0)
                 {
                     item.SetConnections(0);
                     item.SetState(FileStatus.Verifying);
@@ -257,6 +290,12 @@ namespace ArchiveOrgCollectionSync
 
                 System.IO.File.Move(partPath, destination, true);
                 System.IO.File.Delete(partPath + ".json");
+
+                if (!isFileList)
+                {
+                    this.ledger?.Record(item, destination, verified.Contains("md5"));
+                }
+
                 item.SetState(FileStatus.Done, verified);
                 this.log.Write(LogLevel.Success, $"Downloaded successfully ({Format.Bytes(item.BytesDone)}){(verified.Contains("md5") ? ", checksum confirmed" : string.Empty)}.", item.Name);
             }
@@ -282,7 +321,7 @@ namespace ArchiveOrgCollectionSync
                 return false;
             }
 
-            if (this.options.Verify == VerifyMode.SizeOnly || item.Md5.Length == 0)
+            if (!this.UseMd5 || item.Md5.Length == 0)
             {
                 return true;
             }
