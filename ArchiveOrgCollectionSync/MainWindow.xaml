@@ -252,7 +252,10 @@
                 <TextBlock x:Name="SummaryTextBlock" Grid.Row="0" Grid.Column="1" Margin="0,0,0,6" HorizontalAlignment="Right" />
                 <ProgressBar x:Name="ProgressBar" Grid.Row="1" Grid.Column="0" Height="24" Maximum="1000" />
                 <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Margin="4,0,0,0">
-                    <Button x:Name="StartButton" Style="{StaticResource BarButton}" IsEnabled="False" Click="StartButton_Click">Start</Button>
+                    <Button x:Name="StartButton" Style="{StaticResource BarButton}" IsEnabled="False" Click="StartButton_Click"
+                        ToolTip="Scan the collection and download what's missing. Files verified in earlier runs are skipped without re-checking; partial downloads resume.">Start</Button>
+                    <Button x:Name="VerifyAllButton" Style="{StaticResource BarButton}" IsEnabled="False" Click="VerifyAllButton_Click"
+                        ToolTip="Scan and MD5-check every existing file again, ignoring earlier verifications. Slow; use it if you suspect disk corruption.">Verify All</Button>
                     <Button x:Name="PauseButton" Style="{StaticResource BarButton}" IsEnabled="False" Click="PauseButton_Click">Pause</Button>
                     <Button x:Name="StopButton" Style="{StaticResource BarButton}" IsEnabled="False" Click="StopButton_Click">Stop</Button>
                     <Button x:Name="RetryFailedButton" Style="{StaticResource BarButton}" IsEnabled="False" Click="RetryFailedButton_Click">Retry Failed</Button>
