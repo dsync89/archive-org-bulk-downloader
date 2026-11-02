@@ -177,6 +177,9 @@ The app fetches `https://archive.org/download/<identifier>/<identifier>_files.xm
   1. Follow the `archive.org/download/...` → `iaNNNNNN.us.archive.org` redirect once.
   2. Split the file into *K* segments.
   3. Each segment streams into its own offset of the preallocated `.part` file (`RandomAccess.WriteAsync`).
+     The file is marked **sparse** first. Otherwise NTFS zero-fills everything before a far segment's first write,
+     which on a hard disk or network share takes minutes inside a write that can't be cancelled. On drives without
+     sparse support (FAT32/exFAT) the file uses one connection instead.
   4. Save the segment map every 2 seconds.
 - **Retries.** Up to 3 retries with exponential backoff on IO errors, timeouts and HTTP 408/429/5xx, honouring
   `Retry-After`. If a server ignores `Range`, the file falls back to a single stream.
