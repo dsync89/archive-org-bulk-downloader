@@ -294,6 +294,7 @@ namespace ArchiveOrgCollectionSync
                     verified = "done (md5 ok)";
                 }
 
+                SparseFile.TryClear(partPath);
                 System.IO.File.Move(partPath, destination, true);
                 System.IO.File.Delete(partPath + ".json");
 
@@ -363,15 +364,31 @@ namespace ArchiveOrgCollectionSync
             string statePath = partPath + ".json";
             var state = PartState.Load(statePath);
 
-            if (state == null
+            bool fresh = state == null
                 || state.Size != item.Size
                 || state.Md5 != item.Md5
                 || !System.IO.File.Exists(partPath)
-                || (item.ForceSingleStream && (state.Segments.Count > 1 || state.Done > 0)))
+                || (item.ForceSingleStream && (state.Segments.Count > 1 || state.Done > 0));
+
+            if (fresh)
+            {
+                System.IO.File.Delete(partPath);
+            }
+
+            // Sparse before preallocating, so segments that start deep into the file don't stall on zero-filling.
+            bool sparse = SparseFile.TrySet(partPath);
+
+            if (fresh || state == null)
             {
                 int segments = item.ForceSingleStream || item.Size < SegmentThreshold ? 1 : Math.Max(1, this.options.ConnectionsPerFile);
+
+                if (segments > 1 && !sparse)
+                {
+                    segments = 1;
+                    this.log.Write(LogLevel.Info, "This drive can't hold sparse files, so it downloads over one connection (several would stall while Windows zero-fills the file).", item.Name);
+                }
+
                 state = PartState.Create(item.Size, item.Md5, segments);
-                System.IO.File.Delete(partPath);
             }
             else if (state.Done > 0)
             {
