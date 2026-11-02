@@ -107,6 +107,7 @@
         {
             var view = new ListCollectionView(source) { Filter = this.FilterItem, IsLiveFiltering = true };
             view.LiveFilteringProperties.Add(nameof(FileItem.Status));
+            view.LiveFilteringProperties.Add(nameof(FileItem.IsChecked));
             this.FilesDataGrid.ItemsSource = view;
             return view;
         }
@@ -191,32 +192,98 @@
             }
         }
 
-        private async void StartButton_Click(object sender, RoutedEventArgs e)
+        private static bool SameFolder(string a, string b)
         {
-            string url = this.UrlTextBox.Text.Trim();
-            string? collectionName = MainWindow.ParseCollectionName(url);
+            return Path.GetFullPath(a).TrimEnd(Path.DirectorySeparatorChar).Equals(Path.GetFullPath(b).TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase);
+        }
 
-            if (collectionName == null)
+        /// <summary>Validates the URL and folder boxes, showing an error when they are unusable.</summary>
+        private bool TryReadTarget(out string url, out string collectionName, out string folder)
+        {
+            url = this.UrlTextBox.Text.Trim();
+            folder = this.FolderTextBox.Text.Trim();
+            collectionName = MainWindow.ParseCollectionName(url) ?? string.Empty;
+
+            if (collectionName.Length == 0)
             {
                 MessageBox.Show(this, "Incorrect Archive.org Collection URL. A URL in the format of https://archive.org/details/<collection> or https://archive.org/download/<collection> is expected.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
+                return false;
             }
-
-            string folder = this.FolderTextBox.Text.Trim();
 
             if (!Directory.Exists(folder))
             {
                 MessageBox.Show(this, "Destination folder does not exist.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>Gets a value indicating whether the loaded file list belongs to this collection and folder.</summary>
+        private bool HasListFor(string collectionName, string folder)
+        {
+            return this.session != null
+                && this.items.Count > 0
+                && this.session.Collection.Equals(collectionName, StringComparison.OrdinalIgnoreCase)
+                && MainWindow.SameFolder(this.session.Folder, folder);
+        }
+
+        private async void ScanButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (this.running || !this.TryReadTarget(out string url, out string collectionName, out string folder))
+            {
+                return;
+            }
+
+            this.SaveSettings();
+            this.session = SessionStore.Create(url, collectionName, folder, this.ReadOptions());
+            this.LoadItems(Array.Empty<FileItem>());
+            this.logEntries.Clear();
+
+            await this.RunAsync(true, _ => false, process: false);
+        }
+
+        private async void StartButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (this.running || !this.TryReadTarget(out string url, out string collectionName, out string folder))
+            {
                 return;
             }
 
             this.SaveSettings();
             var options = this.ReadOptions();
+            bool verifyAll = sender == this.VerifyAllButton;
 
-            if (sender != this.VerifyAllButton && this.FindUnfinishedSession(collectionName, folder) is { } unfinished)
+            // A list for this collection and folder is already on screen (after Scan, a pause or an opened session):
+            // work on its ticked files instead of scanning again, so the user's picks are kept.
+            if (this.HasListFor(collectionName, folder) && this.session is { } loaded)
+            {
+                loaded.Options = options;
+
+                if (verifyAll)
+                {
+                    foreach (var item in this.items.Where(i => i.IsChecked))
+                    {
+                        item.Restore(FileStatus.Queued, null);
+                    }
+
+                    await this.RunAsync(false, i => i.IsChecked && i.CurrentStatus == FileStatus.Queued, reverifyAll: true);
+                    return;
+                }
+
+                if (this.items.Any(i => i.IsChecked && i.CurrentStatus is FileStatus.Queued or FileStatus.Failed))
+                {
+                    await this.RunAsync(false, i => i.IsChecked && i.CurrentStatus is FileStatus.Failed or FileStatus.Queued);
+                    return;
+                }
+
+                // Everything ticked is finished: fall through to a fresh scan, which picks up new files.
+            }
+
+            if (!verifyAll && this.FindUnfinishedSession(collectionName, folder) is { } unfinished)
             {
                 int failed = unfinished.FailedCount;
-                int notFinished = unfinished.Files.Count(f => f.Status is not (FileStatus.Done or FileStatus.Skipped or FileStatus.Failed));
+                int notFinished = unfinished.Files.Count(f => f.Checked && f.Status is not (FileStatus.Done or FileStatus.Skipped or FileStatus.Failed));
                 var answer = MessageBox.Show(
                     this,
                     $"An unfinished session for {collectionName} in this folder exists (started {unfinished.WhenText}): {failed} failed, {notFinished} not finished.\n\n"
@@ -237,7 +304,7 @@
                     // Keep the options currently chosen in the UI rather than the ones saved with the session.
                     this.ApplyOptions(options);
                     unfinished.Options = options;
-                    await this.RunAsync(false, i => i.CurrentStatus is FileStatus.Failed or FileStatus.Queued);
+                    await this.RunAsync(false, i => i.IsChecked && i.CurrentStatus is FileStatus.Failed or FileStatus.Queued);
                     return;
                 }
             }
@@ -246,7 +313,7 @@
             this.LoadItems(Array.Empty<FileItem>());
             this.logEntries.Clear();
 
-            await this.RunAsync(true, i => i.CurrentStatus == FileStatus.Queued, sender == this.VerifyAllButton);
+            await this.RunAsync(true, i => i.IsChecked && i.CurrentStatus == FileStatus.Queued, verifyAll);
         }
 
         private void VerifyAllButton_Click(object sender, RoutedEventArgs e)
@@ -256,15 +323,18 @@
 
         private SessionRecord? FindUnfinishedSession(string collection, string folder)
         {
-            string fullFolder = Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar);
-
             // Only the latest session for this collection and folder counts; an older one superseded by a newer scan
-            // shouldn't keep asking.
-            var latest = SessionStore.LoadAll().FirstOrDefault(r =>
-                r.Collection.Equals(collection, StringComparison.OrdinalIgnoreCase)
-                && Path.GetFullPath(r.Folder).TrimEnd(Path.DirectorySeparatorChar).Equals(fullFolder, StringComparison.OrdinalIgnoreCase));
+            // shouldn't keep asking. Unticked files don't make a session unfinished.
+            var latest = MainWindow.LatestSession(collection, folder);
+            return latest != null && latest.IsUnfinished ? latest : null;
+        }
 
-            return latest != null && latest.Files.Any(f => f.Status is not (FileStatus.Done or FileStatus.Skipped)) ? latest : null;
+        private static SessionRecord? LatestSession(string collection, string folder, string? exceptId = null)
+        {
+            return SessionStore.LoadAll().FirstOrDefault(r =>
+                r.Id != exceptId
+                && r.Collection.Equals(collection, StringComparison.OrdinalIgnoreCase)
+                && MainWindow.SameFolder(r.Folder, folder));
         }
 
         private async void PauseButton_Click(object sender, RoutedEventArgs e)
@@ -276,7 +346,7 @@
                 return;
             }
 
-            await this.RunAsync(false, i => i.CurrentStatus == FileStatus.Queued);
+            await this.RunAsync(false, i => i.IsChecked && i.CurrentStatus == FileStatus.Queued);
         }
 
         private void StopButton_Click(object sender, RoutedEventArgs e)
@@ -288,14 +358,15 @@
 
         private async void RetryFailedButton_Click(object sender, RoutedEventArgs e)
         {
-            await this.RunAsync(false, i => i.CurrentStatus is FileStatus.Failed or FileStatus.Queued);
+            await this.RunAsync(false, i => i.IsChecked && i.CurrentStatus is FileStatus.Failed or FileStatus.Queued);
         }
 
         /// <summary>
         /// Runs the current session: optionally scans the collection first, then downloads the items matching
-        /// <paramref name="selector"/>. Pause, Stop and errors all end here with the session saved.
+        /// <paramref name="selector"/> (skipped when <paramref name="process"/> is false, for Scan). Pause, Stop and
+        /// errors all end here with the session saved.
         /// </summary>
-        private async Task RunAsync(bool scan, Func<FileItem, bool> selector, bool reverifyAll = false)
+        private async Task RunAsync(bool scan, Func<FileItem, bool> selector, bool reverifyAll = false, bool process = true)
         {
             if (this.running || this.session == null)
             {
@@ -318,7 +389,8 @@
             this.log.Open(SessionStore.LogPath(current));
             this.log.Write(
                 LogLevel.Info,
-                reverifyAll
+                !process ? "Scan: listing files only; tick the ones you want, then press Start."
+                : reverifyAll
                     ? "Verify All: every existing file is MD5-checked again, ignoring earlier verifications."
                     : $"{ledger.Count} file(s) in this folder were verified in earlier runs; unchanged ones are skipped without re-checking.");
             this.UpdateButtons();
@@ -339,18 +411,17 @@
                         : files;
 
                     this.LoadItems(wanted.Select(f => new FileItem(f)));
+                    this.RestoreChecks(current);
                     this.log.Write(
                         LogLevel.Info,
                         current.Options.OriginalsOnly
                             ? $"{files.Length} file(s) listed, {wanted.Length} original(s) selected ({Format.Bytes(wanted.Sum(f => f.Size))})."
                             : $"{files.Length} file(s) listed ({Format.Bytes(files.Sum(f => f.Size))}).");
 
-                    if (current.Options.DeleteExtraFiles)
+                    // Scan alone never touches the disk.
+                    if (process)
                     {
-                        this.SetStatus("Deleting files that are not in the collection…");
-                        var engineForDelete = this.engine;
-                        var (deleted, errors) = await Task.Run(() => engineForDelete.DeleteExtraFiles(current.Folder, files), token);
-                        this.log.Write(errors > 0 ? LogLevel.Warn : LogLevel.Info, $"{deleted} file(s) deleted because they are not in the collection, {errors} could not be deleted.");
+                        await this.DeleteExtraFilesAsync(current, this.engine, files, token);
                     }
 
                     current.Capture(this.items);
@@ -358,21 +429,10 @@
                     this.RefreshSessions();
                 }
 
-                var queue = this.items.Where(selector).ToList();
-
-                if (!scan && queue.Count > 0)
+                if (process)
                 {
-                    await this.RefreshFileListAsync(current, queue, token);
+                    await this.ProcessQueueAsync(current, this.engine, scan, selector, token);
                 }
-
-                foreach (var item in queue.Where(i => i.CurrentStatus == FileStatus.Failed))
-                {
-                    item.Restore(FileStatus.Queued, null);
-                }
-
-                this.SetStatus($"Syncing {queue.Count} file(s) — {current.Options.FilesInParallel} in parallel, up to {current.Options.ConnectionsPerFile} connection(s) each…");
-                this.log.Write(LogLevel.Info, $"Processing {queue.Count} file(s) with {current.Options.FilesInParallel} file(s) in parallel and {current.Options.ConnectionsPerFile} connection(s) per file.");
-                await this.engine.RunAsync(current.Collection, current.Folder, queue, token);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
@@ -386,12 +446,14 @@
             this.runClock.Stop();
             this.Tick();
 
-            int done = this.items.Count(i => i.CurrentStatus == FileStatus.Done);
-            int skipped = this.items.Count(i => i.CurrentStatus == FileStatus.Skipped);
-            int failedFiles = this.items.Count(i => i.CurrentStatus == FileStatus.Failed);
-            int queued = this.items.Count(i => i.CurrentStatus == FileStatus.Queued);
+            int done = this.items.Count(i => i.IsChecked && i.CurrentStatus == FileStatus.Done);
+            int skipped = this.items.Count(i => i.IsChecked && i.CurrentStatus == FileStatus.Skipped);
+            int failedFiles = this.items.Count(i => i.IsChecked && i.CurrentStatus == FileStatus.Failed);
+            int queued = this.items.Count(i => i.IsChecked && i.CurrentStatus == FileStatus.Queued);
+            int unticked = this.items.Count(i => !i.IsChecked);
 
             current.State = this.stopRequested || failed ? SessionState.Stopped
+                : !process && !token.IsCancellationRequested ? SessionState.Scanned
                 : token.IsCancellationRequested || queued > 0 ? SessionState.Paused
                 : SessionState.Completed;
             current.Ended = DateTime.Now;
@@ -399,9 +461,17 @@
             current.BytesDownloaded = this.sessionBaseBytes + this.engine.BytesReceived;
             current.Capture(this.items);
 
-            var level = failed || failedFiles > 0 ? LogLevel.Error : current.State == SessionState.Completed ? LogLevel.Success : LogLevel.Warn;
-            string summary = $"{current.State}: {done} downloaded, {skipped} already up to date, {failedFiles} failed, {queued} queued. "
-                + $"{Format.Bytes(this.engine.BytesReceived)} in {Format.Duration(this.runClock.Elapsed)} ({Format.Speed(this.engine.BytesReceived / Math.Max(1, this.runClock.Elapsed.TotalSeconds))}).";
+            var level = failed || failedFiles > 0 ? LogLevel.Error
+                : current.State == SessionState.Completed ? LogLevel.Success
+                : current.State == SessionState.Scanned ? LogLevel.Info
+                : LogLevel.Warn;
+            string summary = current.State == SessionState.Scanned
+                ? $"Scanned: {this.items.Count} file(s), {this.items.Count - unticked} ticked ({Format.Bytes(this.items.Where(i => i.IsChecked).Sum(i => i.Size))}). Untick what you don't want, then press Start."
+                : $"{current.State}: {done} downloaded, {skipped} already up to date, {failedFiles} failed, {queued} queued"
+                    + (unticked > 0 ? $", {unticked} unticked. " : ". ")
+                    + $"{Format.Bytes(this.engine.BytesReceived)} in {Format.Duration(this.runClock.Elapsed)}"
+                    + (this.engine.BytesReceived > 0 ? $" ({Format.Speed(this.engine.BytesReceived / Math.Max(1, this.runClock.Elapsed.TotalSeconds))})." : ".");
+
             this.log.Write(level, summary);
             this.log.Close();
             this.Tick();
@@ -420,18 +490,71 @@
             }
         }
 
+        private async Task ProcessQueueAsync(SessionRecord current, DownloadEngine engine, bool scan, Func<FileItem, bool> selector, CancellationToken token)
+        {
+            var queue = this.items.Where(selector).ToList();
+
+            if (!scan && await this.RefreshFileListAsync(current, queue, token) is { } latest)
+            {
+                // Delete extra files applies however the run started (e.g. ticked after Scan, then Start).
+                await this.DeleteExtraFilesAsync(current, engine, latest, token);
+            }
+
+            foreach (var item in queue.Where(i => i.CurrentStatus == FileStatus.Failed))
+            {
+                item.Restore(FileStatus.Queued, null);
+            }
+
+            this.SetStatus($"Syncing {queue.Count} file(s) — {current.Options.FilesInParallel} in parallel, up to {current.Options.ConnectionsPerFile} connection(s) each…");
+            this.log.Write(LogLevel.Info, $"Processing {queue.Count} ticked file(s) with {current.Options.FilesInParallel} file(s) in parallel and {current.Options.ConnectionsPerFile} connection(s) per file.");
+            await engine.RunAsync(current.Collection, current.Folder, queue, token);
+        }
+
+        /// <summary>
+        /// After a scan, carries the ticks over from the previous session for this collection and folder, so files
+        /// the user unticked stay unticked. Files new to the list stay ticked.
+        /// </summary>
+        private void RestoreChecks(SessionRecord current)
+        {
+            if (MainWindow.LatestSession(current.Collection, current.Folder, current.Id) is not { } previous)
+            {
+                return;
+            }
+
+            var unticked = previous.Files.Where(f => !f.Checked).Select(f => f.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            if (unticked.Count == 0)
+            {
+                return;
+            }
+
+            int count = 0;
+
+            foreach (var item in this.items.Where(i => unticked.Contains(i.Name)))
+            {
+                item.IsChecked = false;
+                count++;
+            }
+
+            this.log.Write(LogLevel.Info, $"{count} file(s) left unticked as in the previous session ({previous.WhenText}). Use Check: All to include them.");
+        }
+
         /// <summary>
         /// Re-reads the collection's file list before a resume or retry. Uploaders replace files and archive.org
         /// regenerates its metadata files, so the size and MD5 saved at scan time can be stale and would fail forever.
         /// </summary>
-        private async Task RefreshFileListAsync(SessionRecord current, List<FileItem> queue, CancellationToken token)
+        /// <returns>The full fresh file list, or null when archive.org couldn't be reached.</returns>
+        private async Task<File[]?> RefreshFileListAsync(SessionRecord current, List<FileItem> queue, CancellationToken token)
         {
             this.SetStatus("Refreshing the file list from archive.org…");
             var latest = new Dictionary<string, File>(StringComparer.OrdinalIgnoreCase);
+            File[] files;
 
             try
             {
-                foreach (var file in await DownloadEngine.FetchFileListAsync(current.Collection, token))
+                files = await DownloadEngine.FetchFileListAsync(current.Collection, token);
+
+                foreach (var file in files)
                 {
                     latest.TryAdd(file.Name, file);
                 }
@@ -439,7 +562,7 @@
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 this.log.Write(LogLevel.Warn, $"Could not refresh the file list; using the one saved with the session. - {ex.Message}");
-                return;
+                return null;
             }
 
             int changed = 0;
@@ -462,6 +585,23 @@
             }
 
             this.log.Write(LogLevel.Info, $"File list refreshed: {changed} file(s) changed, {removed} no longer listed.");
+            return files;
+        }
+
+        /// <summary>
+        /// Deletes local files that aren't in the collection when that option is on. Uses the full listing, so files
+        /// that are only unticked are never deleted.
+        /// </summary>
+        private async Task DeleteExtraFilesAsync(SessionRecord current, DownloadEngine engine, File[] files, CancellationToken token)
+        {
+            if (!current.Options.DeleteExtraFiles)
+            {
+                return;
+            }
+
+            this.SetStatus("Deleting files that are not in the collection…");
+            var (deleted, errors) = await Task.Run(() => engine.DeleteExtraFiles(current.Folder, files), token);
+            this.log.Write(errors > 0 ? LogLevel.Warn : LogLevel.Info, $"{deleted} file(s) deleted because they are not in the collection, {errors} could not be deleted.");
         }
 
         private void Tick()
@@ -470,7 +610,7 @@
             double elapsed = (now - this.lastTick).TotalSeconds;
             this.lastTick = now;
 
-            int queued = 0, active = 0, done = 0, skipped = 0, failed = 0;
+            int queued = 0, active = 0, done = 0, skipped = 0, failed = 0, unticked = 0, visibleTicked = 0;
             long totalBytes = 0, doneBytes = 0;
 
             foreach (var item in this.items)
@@ -478,6 +618,13 @@
                 if (item.IsActive || item.Status != item.CurrentStatus)
                 {
                     item.Refresh(elapsed);
+                }
+
+                // Unticked files are out of the job: they don't count towards the totals or the progress.
+                if (!item.IsChecked && !item.IsActive)
+                {
+                    unticked++;
+                    continue;
                 }
 
                 switch (item.Status)
@@ -499,6 +646,15 @@
             this.FilterDone.Content = $"Done ({done})";
             this.FilterSkipped.Content = $"Skipped ({skipped})";
             this.FilterFailed.Content = $"Failed ({failed})";
+            this.FilterUnchecked.Content = $"Unchecked ({unticked})";
+            this.CheckedTextBlock.Text = this.items.Count == 0 ? string.Empty : $"☑ {this.items.Count - unticked} of {this.items.Count} ticked · {Format.Bytes(totalBytes)}";
+
+            foreach (FileItem item in this.itemsView)
+            {
+                visibleTicked += item.IsChecked ? 1 : 0;
+            }
+
+            this.HeaderCheckBox.IsChecked = this.itemsView.Count > 0 && visibleTicked == this.itemsView.Count;
 
             this.DrainLog();
 
@@ -534,9 +690,10 @@
                 }
             }
 
-            this.SummaryTextBlock.Text = $"{done + skipped} / {this.items.Count} files · {Format.Bytes(doneBytes)} / {Format.Bytes(totalBytes)}{speedText}{etaText}{connectionsText}";
+            int jobFiles = this.items.Count - unticked;
+            this.SummaryTextBlock.Text = $"{done + skipped} / {jobFiles} files · {Format.Bytes(doneBytes)} / {Format.Bytes(totalBytes)}{speedText}{etaText}{connectionsText}";
 
-            double fraction = totalBytes > 0 ? (double)doneBytes / totalBytes : (double)(done + skipped) / this.items.Count;
+            double fraction = totalBytes > 0 ? (double)doneBytes / totalBytes : jobFiles > 0 ? (double)(done + skipped) / jobFiles : 0;
             this.ProgressBar.Value = fraction * this.ProgressBar.Maximum;
             this.Taskbar.ProgressValue = fraction;
             this.Taskbar.ProgressState = !this.running ? TaskbarItemProgressState.None
@@ -586,9 +743,10 @@
         private void UpdateButtons()
         {
             bool hasInput = this.FolderTextBox.Text.Trim().Length > 0 && this.UrlTextBox.Text.Trim().Length > 0;
-            bool hasQueued = this.items.Any(i => i.CurrentStatus == FileStatus.Queued);
-            bool hasFailed = this.items.Any(i => i.CurrentStatus == FileStatus.Failed);
+            bool hasQueued = this.items.Any(i => i.IsChecked && i.CurrentStatus == FileStatus.Queued);
+            bool hasFailed = this.items.Any(i => i.IsChecked && i.CurrentStatus == FileStatus.Failed);
 
+            this.ScanButton.IsEnabled = !this.running && hasInput;
             this.StartButton.IsEnabled = !this.running && hasInput;
             this.VerifyAllButton.IsEnabled = !this.running && hasInput;
             bool canResume = !this.running && this.session != null && hasQueued;
@@ -613,8 +771,9 @@
             var item = (FileItem)value;
 
             bool statusMatches =
-                this.FilterActive.IsChecked == true ? item.IsActive
-                : this.FilterQueued.IsChecked == true ? item.Status == FileStatus.Queued
+                this.FilterUnchecked.IsChecked == true ? !item.IsChecked
+                : this.FilterActive.IsChecked == true ? item.IsActive
+                : this.FilterQueued.IsChecked == true ? item.IsChecked && item.Status == FileStatus.Queued
                 : this.FilterDone.IsChecked == true ? item.Status == FileStatus.Done
                 : this.FilterSkipped.IsChecked == true ? item.Status == FileStatus.Skipped
                 : this.FilterFailed.IsChecked != true || item.Status == FileStatus.Failed;
@@ -691,12 +850,166 @@
                 return;
             }
 
-            foreach (var item in selected.Where(i => i.CurrentStatus != FileStatus.Queued))
+            foreach (var item in selected)
             {
-                item.Restore(FileStatus.Queued, null);
+                item.IsChecked = true;
+
+                if (item.CurrentStatus != FileStatus.Queued)
+                {
+                    item.Restore(FileStatus.Queued, null);
+                }
             }
 
             await this.RunAsync(false, selected.Contains);
+        }
+
+        // ----- Ticking files -----
+
+        private void SetChecked(IEnumerable<FileItem> files, bool value)
+        {
+            foreach (var item in files.ToList())
+            {
+                item.IsChecked = value;
+            }
+
+            this.UpdateButtons();
+            this.Tick();
+        }
+
+        /// <summary>Ticks exactly <paramref name="keep"/> and unticks everything else.</summary>
+        private void CheckOnly(IEnumerable<FileItem> keep)
+        {
+            var set = keep.ToHashSet();
+
+            foreach (var item in this.items)
+            {
+                item.IsChecked = set.Contains(item);
+            }
+
+            this.UpdateButtons();
+            this.Tick();
+        }
+
+        /// <summary>Space and the row checkbox act on all highlighted rows: tick them all unless all are ticked.</summary>
+        private void ToggleHighlighted(FileItem? clicked = null)
+        {
+            var targets = this.SelectedItems().ToList();
+
+            if (clicked != null && !targets.Contains(clicked))
+            {
+                targets = new List<FileItem> { clicked };
+            }
+
+            if (targets.Count > 0)
+            {
+                bool value = clicked != null ? !clicked.IsChecked : targets.Any(i => !i.IsChecked);
+                this.SetChecked(targets, value);
+            }
+        }
+
+        private void CheckAllButton_Click(object sender, RoutedEventArgs e) => this.SetChecked(this.items, true);
+
+        private void CheckNoneButton_Click(object sender, RoutedEventArgs e) => this.SetChecked(this.items, false);
+
+        private void CheckInvertButton_Click(object sender, RoutedEventArgs e)
+        {
+            foreach (var item in this.items)
+            {
+                item.IsChecked = !item.IsChecked;
+            }
+
+            this.UpdateButtons();
+            this.Tick();
+        }
+
+        private void CheckVisibleButton_Click(object sender, RoutedEventArgs e) => this.CheckOnly(this.itemsView.OfType<FileItem>());
+
+        private void CheckHighlightedButton_Click(object sender, RoutedEventArgs e)
+        {
+            var highlighted = this.SelectedItems().ToList();
+
+            if (highlighted.Count > 0)
+            {
+                this.CheckOnly(highlighted);
+            }
+        }
+
+        private void CheckMissingButton_Click(object sender, RoutedEventArgs e)
+        {
+            string folder = this.session?.Folder ?? this.FolderTextBox.Text.Trim();
+
+            if (!Directory.Exists(folder))
+            {
+                return;
+            }
+
+            // Size check only, so it stays instant on big folders; Verify All does the MD5 pass.
+            this.CheckOnly(this.items.Where(i =>
+            {
+                if (i.CurrentStatus is FileStatus.Done or FileStatus.Skipped)
+                {
+                    return false;
+                }
+
+                var info = new FileInfo(Path.Combine(folder, i.Name.Replace('/', Path.DirectorySeparatorChar)));
+                return !info.Exists || (i.HasSize && info.Length != i.Size) || System.IO.File.Exists(info.FullName + ".part");
+            }));
+        }
+
+        private void HeaderCheckBox_Click(object sender, RoutedEventArgs e)
+        {
+            var visible = this.itemsView.OfType<FileItem>().ToList();
+            this.SetChecked(visible, visible.Any(i => !i.IsChecked));
+        }
+
+        private void CheckHighlightedMenuItem_Click(object sender, RoutedEventArgs e) => this.SetChecked(this.SelectedItems(), true);
+
+        private void UncheckHighlightedMenuItem_Click(object sender, RoutedEventArgs e) => this.SetChecked(this.SelectedItems(), false);
+
+        private void FilesDataGrid_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+        {
+            if (e.Key == System.Windows.Input.Key.Space)
+            {
+                this.ToggleHighlighted();
+                e.Handled = true;
+            }
+        }
+
+        /// <summary>
+        /// Handles clicks on a row checkbox here so that, with several rows highlighted, one click ticks or unticks
+        /// them all and the highlight survives (the grid would otherwise collapse it to the clicked row).
+        /// </summary>
+        private void FilesDataGrid_PreviewMouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            DependencyObject? node = e.OriginalSource as DependencyObject;
+
+            while (node != null && node is not CheckBox && node != this.FilesDataGrid)
+            {
+                node = node is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(node) : LogicalTreeHelper.GetParent(node);
+            }
+
+            if (node is not CheckBox { Tag: "RowCheck", DataContext: FileItem clicked })
+            {
+                return;
+            }
+
+            var highlighted = this.SelectedItems().ToList();
+            this.ToggleHighlighted(clicked);
+            e.Handled = true;
+
+            if (highlighted.Contains(clicked) && highlighted.Count > 1)
+            {
+                // The cell still reacts to the (handled) click and selects its row; put the highlight back.
+                this.Dispatcher.BeginInvoke(DispatcherPriority.Input, () =>
+                {
+                    this.FilesDataGrid.SelectedItems.Clear();
+
+                    foreach (var item in highlighted)
+                    {
+                        this.FilesDataGrid.SelectedItems.Add(item);
+                    }
+                });
+            }
         }
 
         // ----- Sessions tab -----
@@ -718,7 +1031,7 @@
             bool canLoad = record != null && !this.running;
 
             this.SessionOpenButton.IsEnabled = canLoad;
-            this.SessionResumeButton.IsEnabled = canLoad && record!.Files.Any(f => f.Status is not (FileStatus.Done or FileStatus.Skipped or FileStatus.Failed));
+            this.SessionResumeButton.IsEnabled = canLoad && record!.HasQueued;
             this.SessionRetryButton.IsEnabled = canLoad && record!.FailedCount > 0;
             this.SessionRerunButton.IsEnabled = canLoad;
             this.SessionExportButton.IsEnabled = record != null;
@@ -799,7 +1112,7 @@
         {
             if (this.SelectedSession is { } record && this.OpenSession(record))
             {
-                await this.RunAsync(false, i => i.CurrentStatus == FileStatus.Queued);
+                await this.RunAsync(false, i => i.IsChecked && i.CurrentStatus == FileStatus.Queued);
             }
         }
 
@@ -807,7 +1120,7 @@
         {
             if (this.SelectedSession is { } record && this.OpenSession(record))
             {
-                await this.RunAsync(false, i => i.CurrentStatus is FileStatus.Failed or FileStatus.Queued);
+                await this.RunAsync(false, i => i.IsChecked && i.CurrentStatus is FileStatus.Failed or FileStatus.Queued);
             }
         }
 
@@ -954,6 +1267,13 @@
 
             if (!this.running)
             {
+                // Keep the ticks the user changed since the last run.
+                if (this.session != null && this.items.Count > 0)
+                {
+                    this.session.Capture(this.items);
+                    SessionStore.Save(this.session);
+                }
+
                 return;
             }
 

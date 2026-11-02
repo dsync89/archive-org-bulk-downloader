@@ -27,6 +27,10 @@ Paste a collection URL, pick a folder and press Start.
 - **Multi-connection (segmented) downloads.** Large files are split into HTTP `Range` segments and fetched over
   several connections at once, like IDM or aria2.
 - **Parallel downloads.** Several files download at the same time.
+- **Pick which files to download, like JDownloader's LinkGrabber.**
+  - **Scan** lists the collection without downloading. Tick or untick files, then press **Start**.
+  - Quick buttons: All, None, Invert, Visible (whatever the filter and search show), Highlighted, Only Missing.
+  - Space toggles the highlighted rows. Your picks are remembered for the next scan.
 - **Resume interrupted downloads.** Pause, crash, network drop or closing the app keeps `.part` files, and the next
   run continues where it stopped.
 - **MD5 checksum verification** against archive.org's own checksums. A corrupt download never overwrites a good file.
@@ -53,7 +57,8 @@ Paste a collection URL, pick a folder and press Start.
 
 1. Copy the collection or item URL from archive.org, either `https://archive.org/details/<identifier>` or
    `https://archive.org/download/<identifier>`.
-2. Paste it, choose a destination folder and press **Start**.
+2. Paste it, choose a destination folder and press **Start** to download everything. Or press **Scan** first, untick
+   what you don't want, then press **Start**.
 3. Watch the file list. **Pause** keeps partial files; **Resume** continues; **Retry Failed** re-tries only failures.
 
 ### Options
@@ -104,6 +109,19 @@ Press **Start** again with the same URL and folder. It works like JDownloader:
 - With **Delete files not in the collection**, your folder mirrors the collection exactly.
 
 Use **Verify All** to MD5-check every existing file again, for example if you suspect disk corruption.
+
+### How do I download only some files from an archive.org collection?
+
+1. Press **Scan**. The whole list appears and nothing downloads yet.
+2. Tick what you want. Some shortcuts:
+   - Type part of a name in **Search** (e.g. `metal`) and click **Check: Visible** to get just the matches.
+   - Ctrl/Shift-click rows and press **Space**, or click **Check: Highlighted**.
+   - **Only Missing** ticks files that aren't in your folder yet, are partial, or have a different size there.
+3. Press **Start**.
+
+Unticked files are never checked, downloaded or verified, and **Delete files not in the collection** never deletes
+them. They are only out of this job. The next Scan or Start keeps your picks, and **Check: All** brings everything
+back. **Verify All** re-hashes only the ticked files.
 
 ### Does Start re-check every file every time?
 
@@ -164,6 +182,16 @@ The app fetches `https://archive.org/download/<identifier>/<identifier>_files.xm
   `Retry-After`. If a server ignores `Range`, the file falls back to a single stream.
 - **Verification.** At most 2 MD5 checks run at once, so downloads keep the line busy. The `.part` file then
   atomically replaces the destination file.
+
+### File selection
+
+Each row has a tick (`FileItem.IsChecked`), saved per session as `Checked`. Sessions from older versions load with
+everything ticked.
+- Start, Resume, Retry and Verify All queue only ticked files. A file unticked during a run is skipped when a worker
+  reaches it.
+- After a scan, the ticks from the latest session for the same collection and folder are carried over; new files are
+  ticked.
+- Totals, progress and the "unfinished session" prompt count ticked files only.
 
 ### UI
 

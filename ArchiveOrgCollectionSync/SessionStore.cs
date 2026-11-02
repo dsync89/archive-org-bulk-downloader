@@ -13,7 +13,10 @@ namespace ArchiveOrgCollectionSync
         Running,
         Paused,
         Stopped,
-        Completed
+        Completed,
+
+        /// <summary>Listed by Scan; nothing processed yet.</summary>
+        Scanned
     }
 
     public sealed class SessionFile
@@ -29,6 +32,9 @@ namespace ArchiveOrgCollectionSync
         public FileStatus Status { get; set; }
 
         public string? Detail { get; set; }
+
+        /// <summary>Gets or sets a value indicating whether the file is ticked; true for sessions saved before 1.4.</summary>
+        public bool Checked { get; set; } = true;
     }
 
     /// <summary>One sync run (TeraCopy-style history entry), saved as sessions\&lt;Id&gt;.json next to &lt;Id&gt;.log.</summary>
@@ -57,21 +63,32 @@ namespace ArchiveOrgCollectionSync
         public List<SessionFile> Files { get; set; } = new();
 
         [JsonIgnore]
-        public int FailedCount => this.Files.Count(f => f.Status == FileStatus.Failed);
+        public int FailedCount => this.Files.Count(f => f.Checked && f.Status == FileStatus.Failed);
 
         [JsonIgnore]
-        public int FinishedCount => this.Files.Count(f => f.Status is FileStatus.Done or FileStatus.Skipped);
+        public int CheckedCount => this.Files.Count(f => f.Checked);
+
+        /// <summary>Gets a value indicating whether checked files are still queued or failed.</summary>
+        [JsonIgnore]
+        public bool IsUnfinished => this.Files.Any(f => f.Checked && f.Status is not (FileStatus.Done or FileStatus.Skipped));
+
+        [JsonIgnore]
+        public bool HasQueued => this.Files.Any(f => f.Checked && f.Status is not (FileStatus.Done or FileStatus.Skipped or FileStatus.Failed));
+
+        [JsonIgnore]
+        public int FinishedCount => this.Files.Count(f => f.Checked && f.Status is FileStatus.Done or FileStatus.Skipped);
 
         [JsonIgnore]
         public string WhenText => this.Started.ToString("yyyy-MM-dd HH:mm");
 
         [JsonIgnore]
-        public string FilesText => this.FailedCount > 0
-            ? $"{this.FinishedCount} / {this.Files.Count} ({this.FailedCount} ✖)"
-            : $"{this.FinishedCount} / {this.Files.Count}";
+        public string FilesText =>
+            $"{this.FinishedCount} / {this.CheckedCount}"
+            + (this.CheckedCount < this.Files.Count ? $" of {this.Files.Count}" : string.Empty)
+            + (this.FailedCount > 0 ? $" ({this.FailedCount} ✖)" : string.Empty);
 
         [JsonIgnore]
-        public string SizeText => Format.Bytes(this.Files.Sum(f => f.Size));
+        public string SizeText => Format.Bytes(this.Files.Where(f => f.Checked).Sum(f => f.Size));
 
         [JsonIgnore]
         public string DownloadedText => Format.Bytes(this.BytesDownloaded);
@@ -85,6 +102,7 @@ namespace ArchiveOrgCollectionSync
             SessionState.Running => "⬇ running",
             SessionState.Paused => "⏸ paused",
             SessionState.Stopped => "■ stopped",
+            SessionState.Scanned => "☰ scanned",
             _ when this.FailedCount > 0 => $"✖ {this.FailedCount} failed",
             _ => "✔ complete"
         };
@@ -98,7 +116,8 @@ namespace ArchiveOrgCollectionSync
                 HasSize = i.HasSize,
                 Md5 = i.Md5,
                 Status = i.CurrentStatus,
-                Detail = i.CurrentDetail
+                Detail = i.CurrentDetail,
+                Checked = i.IsChecked
             }).ToList();
         }
 
@@ -106,7 +125,7 @@ namespace ArchiveOrgCollectionSync
         {
             return this.Files.Select(f =>
             {
-                var item = new FileItem(new File { Name = f.Name, Size = f.Size, SizeSpecified = f.HasSize, Md5 = f.Md5 });
+                var item = new FileItem(new File { Name = f.Name, Size = f.Size, SizeSpecified = f.HasSize, Md5 = f.Md5 }) { IsChecked = f.Checked };
 
                 // Anything that was mid-flight when the session was saved goes back to the queue.
                 var status = f.Status is FileStatus.Checking or FileStatus.Downloading or FileStatus.Verifying ? FileStatus.Queued : f.Status;

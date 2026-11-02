@@ -32,6 +32,10 @@
             <Setter Property="Margin" Value="6,0,0,0" />
             <Setter Property="Padding" Value="8,0" />
         </Style>
+        <Style x:Key="CheckButton" TargetType="Button">
+            <Setter Property="Padding" Value="8,1" />
+            <Setter Property="Margin" Value="0,0,4,0" />
+        </Style>
         <Style x:Key="RightCell" TargetType="TextBlock">
             <Setter Property="HorizontalAlignment" Value="Right" />
         </Style>
@@ -91,12 +95,31 @@
                             <RadioButton x:Name="FilterDone" Style="{StaticResource FilterButton}" Checked="FileFilter_Changed">Done</RadioButton>
                             <RadioButton x:Name="FilterSkipped" Style="{StaticResource FilterButton}" Checked="FileFilter_Changed">Skipped</RadioButton>
                             <RadioButton x:Name="FilterFailed" Style="{StaticResource FilterButton}" Checked="FileFilter_Changed">Failed</RadioButton>
+                            <RadioButton x:Name="FilterUnchecked" Style="{StaticResource FilterButton}" Checked="FileFilter_Changed"
+                                ToolTip="Files you unticked; they are not checked, downloaded or verified.">Unchecked</RadioButton>
+                        </StackPanel>
+                    </DockPanel>
+                    <DockPanel x:Name="CheckPanel" DockPanel.Dock="Top" Margin="0,0,0,6">
+                        <TextBlock x:Name="CheckedTextBlock" DockPanel.Dock="Right" VerticalAlignment="Center" />
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock VerticalAlignment="Center" Margin="0,0,6,0">Check:</TextBlock>
+                            <Button Style="{StaticResource CheckButton}" Click="CheckAllButton_Click" ToolTip="Tick every file.">All</Button>
+                            <Button Style="{StaticResource CheckButton}" Click="CheckNoneButton_Click" ToolTip="Untick every file.">None</Button>
+                            <Button Style="{StaticResource CheckButton}" Click="CheckInvertButton_Click" ToolTip="Swap ticked and unticked files.">Invert</Button>
+                            <Button Style="{StaticResource CheckButton}" Click="CheckVisibleButton_Click"
+                                ToolTip="Tick only the files the current filter and search show; untick the rest. E.g. search &quot;metal&quot;, then click this.">Visible</Button>
+                            <Button Style="{StaticResource CheckButton}" Click="CheckHighlightedButton_Click"
+                                ToolTip="Tick only the highlighted rows (Ctrl/Shift-click to highlight several); untick the rest.">Highlighted</Button>
+                            <Button Style="{StaticResource CheckButton}" Click="CheckMissingButton_Click"
+                                ToolTip="Tick only files that aren't in the destination folder yet, are partial, or have a different size there. Size check only; use Verify All for MD5.">Only Missing</Button>
+                            <TextBlock VerticalAlignment="Center" Margin="8,0,0,0" Foreground="Gray">Space toggles highlighted rows</TextBlock>
                         </StackPanel>
                     </DockPanel>
                     <DataGrid x:Name="FilesDataGrid" AutoGenerateColumns="False" IsReadOnly="True" HeadersVisibility="Column"
                         GridLinesVisibility="None" SelectionMode="Extended" CanUserResizeRows="False" CanUserAddRows="False"
                         EnableRowVirtualization="True" VirtualizingPanel.VirtualizationMode="Recycling" VirtualizingPanel.IsVirtualizing="True"
-                        RowHeight="22" Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}">
+                        RowHeight="22" Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"
+                        PreviewKeyDown="FilesDataGrid_PreviewKeyDown" PreviewMouseLeftButtonDown="FilesDataGrid_PreviewMouseLeftButtonDown">
                         <DataGrid.RowStyle>
                             <Style TargetType="DataGridRow">
                                 <Style.Triggers>
@@ -109,11 +132,17 @@
                                     <DataTrigger Binding="{Binding Status}" Value="Skipped">
                                         <Setter Property="Foreground" Value="Gray" />
                                     </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsChecked}" Value="False">
+                                        <Setter Property="Foreground" Value="DarkGray" />
+                                    </DataTrigger>
                                 </Style.Triggers>
                             </Style>
                         </DataGrid.RowStyle>
                         <DataGrid.ContextMenu>
                             <ContextMenu>
+                                <MenuItem Header="Check Highlighted" InputGestureText="Space" Click="CheckHighlightedMenuItem_Click" />
+                                <MenuItem Header="Uncheck Highlighted" Click="UncheckHighlightedMenuItem_Click" />
+                                <Separator />
                                 <MenuItem Header="Open Containing Folder" Click="OpenFolderMenuItem_Click" />
                                 <MenuItem Header="Copy Name" Click="CopyNameMenuItem_Click" />
                                 <MenuItem Header="Copy Download URL" Click="CopyUrlMenuItem_Click" />
@@ -122,6 +151,18 @@
                             </ContextMenu>
                         </DataGrid.ContextMenu>
                         <DataGrid.Columns>
+                            <DataGridTemplateColumn Width="30" CanUserSort="False" CanUserResize="False">
+                                <DataGridTemplateColumn.Header>
+                                    <CheckBox x:Name="HeaderCheckBox" IsThreeState="False" Click="HeaderCheckBox_Click" Focusable="False"
+                                        ToolTip="Tick or untick every file the filter and search show." />
+                                </DataGridTemplateColumn.Header>
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <CheckBox IsChecked="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                            HorizontalAlignment="Center" VerticalAlignment="Center" Focusable="False" Tag="RowCheck" />
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                             <DataGridTextColumn Header="" Binding="{Binding StatusGlyph}" Width="26" SortMemberPath="Status" />
                             <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="*" />
                             <DataGridTextColumn Header="Size" Binding="{Binding SizeText}" Width="80" SortMemberPath="Size" ElementStyle="{StaticResource RightCell}" />
@@ -252,10 +293,12 @@
                 <TextBlock x:Name="SummaryTextBlock" Grid.Row="0" Grid.Column="1" Margin="0,0,0,6" HorizontalAlignment="Right" />
                 <ProgressBar x:Name="ProgressBar" Grid.Row="1" Grid.Column="0" Height="24" Maximum="1000" />
                 <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Margin="4,0,0,0">
+                    <Button x:Name="ScanButton" Style="{StaticResource BarButton}" IsEnabled="False" Click="ScanButton_Click"
+                        ToolTip="List the collection's files without downloading, so you can tick the ones you want, then press Start.">Scan</Button>
                     <Button x:Name="StartButton" Style="{StaticResource BarButton}" IsEnabled="False" Click="StartButton_Click"
-                        ToolTip="Scan the collection and download what's missing. Files verified in earlier runs are skipped without re-checking; partial downloads resume.">Start</Button>
+                        ToolTip="Download the ticked files that are missing (scans first when no list is loaded). Files verified in earlier runs are skipped without re-checking; partial downloads resume.">Start</Button>
                     <Button x:Name="VerifyAllButton" Style="{StaticResource BarButton}" IsEnabled="False" Click="VerifyAllButton_Click"
-                        ToolTip="Scan and MD5-check every existing file again, ignoring earlier verifications. Slow; use it if you suspect disk corruption.">Verify All</Button>
+                        ToolTip="MD5-check every ticked file again, ignoring earlier verifications. Slow; use it if you suspect disk corruption.">Verify All</Button>
                     <Button x:Name="PauseButton" Style="{StaticResource BarButton}" IsEnabled="False" Click="PauseButton_Click">Pause</Button>
                     <Button x:Name="StopButton" Style="{StaticResource BarButton}" IsEnabled="False" Click="StopButton_Click">Stop</Button>
                     <Button x:Name="RetryFailedButton" Style="{StaticResource BarButton}" IsEnabled="False" Click="RetryFailedButton_Click">Retry Failed</Button>
