@@ -28,6 +28,7 @@ namespace ArchiveOrgCollectionSync
         private volatile string? detail;
         private long lastBytes;
         private double speed;
+        private volatile bool isChecked = true;
 
         public FileItem(File file)
         {
@@ -48,6 +49,26 @@ namespace ArchiveOrgCollectionSync
         public bool HasSize { get; private set; }
 
         public string Md5 { get; private set; }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether the user wants this file processed (the checkbox column). Unchecked
+        /// files are never checked, downloaded or hashed. Any thread may read it; the UI thread sets it.
+        /// </summary>
+        public bool IsChecked
+        {
+            get => this.isChecked;
+            set
+            {
+                if (this.isChecked == value)
+                {
+                    return;
+                }
+
+                this.isChecked = value;
+                this.OnPropertyChanged();
+                this.Refresh(0);
+            }
+        }
 
         public string SizeText => this.HasSize ? Format.Bytes(this.Size) : string.Empty;
 
@@ -161,7 +182,7 @@ namespace ArchiveOrgCollectionSync
 
             string progress = this.detail ?? status switch
             {
-                FileStatus.Queued => "queued",
+                FileStatus.Queued => this.isChecked ? "queued" : "not selected",
                 FileStatus.Checking => "checking…",
                 FileStatus.Downloading => conns > 1 ? $"{percent:0}%  ×{conns}" : $"{percent:0}%",
                 FileStatus.Verifying => "verifying md5…",

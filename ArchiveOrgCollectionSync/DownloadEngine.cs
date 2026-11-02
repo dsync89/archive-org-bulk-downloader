@@ -204,6 +204,12 @@ namespace ArchiveOrgCollectionSync
             string partPath = destination + ".part";
             bool isFileList = item.Name.Equals($"{collection}_files.xml", StringComparison.OrdinalIgnoreCase);
 
+            // Unchecked while queued (the user can untick files during a run): leave it alone.
+            if (!item.IsChecked)
+            {
+                return;
+            }
+
             try
             {
                 if (!destination.StartsWith(Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
