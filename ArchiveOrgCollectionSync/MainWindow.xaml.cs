@@ -1406,16 +1406,23 @@
             this.UpdateButtons();
         }
 
-        // ----- Sessions tab -----
+        // ----- Runs (session history, on the Links tab) -----
 
         private SessionRecord? SelectedSession => this.SessionsListView.SelectedItem as SessionRecord;
 
+        /// <summary>Reloads session history into the Links tab (all runs, or the selected link's).</summary>
         private void RefreshSessions()
         {
-            string? selectedId = this.SelectedSession?.Id;
-            var records = SessionStore.LoadAll();
-            this.SessionsListView.ItemsSource = records;
-            this.SessionsListView.SelectedItem = records.FirstOrDefault(r => r.Id == selectedId);
+            if (this.LinksListBox.ItemsSource == null || this.LinksTabItem.IsSelected)
+            {
+                this.RefreshLinks();
+            }
+            else
+            {
+                this.allSessions = SessionStore.LoadAll();
+                this.ShowSessionsOfSelection();
+            }
+
             this.UpdateSessionButtons();
         }
 
@@ -1431,13 +1438,15 @@
             this.SessionExportButton.IsEnabled = record != null;
             this.SessionLogButton.IsEnabled = record != null && System.IO.File.Exists(SessionStore.LogPath(record));
             this.SessionDeleteButton.IsEnabled = canLoad && record!.Id != this.session?.Id;
+            this.UpdateLinkButtons();
         }
 
         private void SessionsTabItem_Selected(object sender, RoutedEventArgs e)
         {
-            if (!this.running)
+            // Selected bubbles up from the Runs/Snapshots/Diff tabs inside; only react to the Links tab itself.
+            if (e.OriginalSource == this.LinksTabItem && !this.running)
             {
-                this.RefreshSessions();
+                this.RefreshLinks();
             }
         }
 
@@ -1682,7 +1691,7 @@
                 return;
             }
 
-            if (MessageBox.Show(this, "A sync is running. Pause it and exit? Partial downloads are kept and you can resume from the Sessions tab.", "Exit", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            if (MessageBox.Show(this, "A sync is running. Pause it and exit? Partial downloads are kept and you can resume from Links → Runs.", "Exit", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
             {
                 e.Cancel = true;
                 return;
