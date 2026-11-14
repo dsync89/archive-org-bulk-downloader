@@ -9,6 +9,7 @@
 - **parallel downloads**, with several files at once and several connections per file;
 - **resume** after pause, crash or reboot;
 - **MD5 checksum verification**;
+- **Sync**, which shows what the uploader added, removed, renamed or replaced since your last download, and applies it;
 - a live, TeraCopy-style file list with speed and ETA.
 
 Paste a collection URL, pick a folder and press Start.
@@ -34,6 +35,12 @@ Paste a collection URL, pick a folder and press Start.
 - **Resume interrupted downloads.** Pause, crash, network drop or closing the app keeps `.part` files, and the next
   run continues where it stopped.
 - **MD5 checksum verification** against archive.org's own checksums. A corrupt download never overwrites a good file.
+- **Know when an item changed: Sync with a diff.** Every download link (collection + folder) keeps snapshots of the
+  item's file list. **⟳ Sync** compares your last snapshot with archive.org now and lists every file that was
+  **+ added, − removed, ~ renamed, ⇄ moved or \* changed** (new checksum). For each file it also shows whether the copy
+  on disk matches the old version, the new one or neither. Then it applies the changes you tick:
+  - renamed files are renamed on disk instead of downloaded again;
+  - replaced and removed files move to `_removed\<date>\` (never deleted), with an `undo.json`.
 - **Sync / mirror mode:**
   - re-running skips files that are already correct;
   - files with the wrong size or checksum download again;
@@ -60,6 +67,9 @@ Paste a collection URL, pick a folder and press Start.
 2. Paste it, choose a destination folder and press **Start** to download everything. Or press **Scan** first, untick
    what you don't want, then press **Start**.
 3. Watch the file list. **Pause** keeps partial files; **Resume** continues; **Retry Failed** re-tries only failures.
+4. Later, press **⟳ Sync** to see what changed on archive.org since then. A banner appears by itself when the item was
+   updated after your last Sync. **Links ▾** lists every collection + folder you've downloaded, so you can switch
+   between them.
 
 ### Options
 
@@ -110,6 +120,29 @@ Press **Start** again with the same URL and folder. It works like JDownloader:
 
 Use **Verify All** to MD5-check every existing file again, for example if you suspect disk corruption.
 
+### How do I find out if files in an archive.org item were silently updated?
+
+Press **⟳ Sync**. Uploaders of big collections (ROM sets, for example) often replace files without saying so: same name,
+new checksum. Sync compares the file list from your last download with archive.org now:
+
+1. **Checking.** It asks archive.org when the item last changed, which is a few bytes. When nothing changed since your
+   last Sync, it stops there. Otherwise it reads the file list and stats your folder. Each step shows its progress, and
+   **Run in background** hides the window to a status strip.
+2. **Review.** It shows every change with its old (A) and new (B) size, checksum and upload date, plus a **Local**
+   column:
+   - `= A ✔` means your copy is the old version and was hashed;
+   - `= B` means you already have the new one;
+   - `? unknown` means the copy was never verified; **Hash unknown** fixes that.
+   Untick anything you want left alone.
+3. **Confirm.** It lists every rename, move and download, and warns first: files removed upstream, local copies that
+   match neither version, free space, and a suspiciously large change.
+4. **Apply.** Renames happen on disk, so there is no download for them. Replaced and removed files move to
+   `_removed\<date>\`. Then the normal download fetches the new versions, skipping unchanged files without hashing.
+
+You don't need to re-hash your existing downloads first. The first Sync of a folder you downloaded with an earlier
+version takes its baseline from the folder's `<identifier>_files.xml` and your old sessions. A file that kept the size
+it had when a session verified it, and wasn't written after that session ended, counts as verified.
+
 ### How do I download only some files from an archive.org collection?
 
 1. Press **Scan**. The whole list appears and nothing downloads yet.
@@ -158,7 +191,13 @@ No. It downloads archive.org **items and collections** (`/details/` and `/downlo
 | `%LocalAppData%\ArchiveOrgCollectionSync\settings.json` | Last URL, folder and options |
 | `%LocalAppData%\ArchiveOrgCollectionSync\sessions\<yyyyMMdd_HHmmss>_<identifier>.json` | Session history (per-file status) |
 | `%LocalAppData%\ArchiveOrgCollectionSync\sessions\<…>.log` | Session log (tab-separated) |
-| `%LocalAppData%\ArchiveOrgCollectionSync\verified\<folder hash>.json` | Verified-files ledger per destination folder (skips re-hashing) |
+| `%LocalAppData%\ArchiveOrgCollectionSync\verified\<folder hash>.json` | Verified-files ledger per destination folder (skips re-hashing): size, MD5, SHA-1, CRC32, local length and write time, and where the proof came from |
+| `%LocalAppData%\ArchiveOrgCollectionSync\links\<identifier>_<folder hash>\link.json` | A download link: URL, folder, last Sync and its snapshot list |
+| `%LocalAppData%\ArchiveOrgCollectionSync\links\<…>\snapshots\<yyyyMMdd_HHmmss>.xml.gz` | One saved copy of the item's file list (name, size, MD5, SHA-1, CRC32, upload time) |
+| `<destination>\_removed\<date>\` | Files Sync moved aside (replaced or removed on archive.org), plus `undo.json` |
+
+Set the environment variable `AOCS_APPDATA` to keep all of this in another folder (the unit tests do, so they never
+touch your real history).
 | `<destination>\<file>.part`, `.part.json` | In-progress download and its resume map |
 
 ## How it works (technical spec)
@@ -166,7 +205,7 @@ No. It downloads archive.org **items and collections** (`/details/` and `/downlo
 ### Scan
 
 The app fetches `https://archive.org/download/<identifier>/<identifier>_files.xml` and reads each file's `name`,
-`source`, `size` and `md5`.
+`source`, `size`, `md5`, `sha1`, `crc32` and `mtime`.
 
 ### Download engine (`DownloadEngine.cs`)
 
@@ -196,6 +235,27 @@ everything ticked.
   ticked.
 - Totals, progress and the "unfinished session" prompt count ticked files only.
 
+### Links, snapshots and Sync
+
+A **link** is one identifier synced into one folder (`LinkStore.cs`). A **snapshot** is the item's file list as it
+was at a Sync, or at a Start (which acts on the list). Scan only compares and never saves one. A snapshot is only saved
+when the list differs from the latest one.
+- **First use:** snapshot #0 is the `<identifier>_files.xml` already in the folder. Failing that, it is the newest
+  session's list, MD5 only.
+- **Diff (`SnapshotDiff.cs`, unit-tested):** archive.org's `history/` copies and the item's own `_files.xml` are left
+  out, and so are derivatives when Originals only is on. Matching runs in this order:
+  1. Same name: **changed** if the size or MD5 differs, **touched** if only `mtime` moved.
+  2. Same MD5 and size under another name: **moved** if only the folder changed, else **renamed**.
+  3. The rest is **added** or **removed**. A file renamed and changed at once shows as both.
+- **Baseline (`SyncPlan.cs`):** a single stat per file. Where the ledger has no current entry, it takes over the proof
+  from the newest session that finished the file, as long as the size is the same and the file wasn't written after
+  that session ended (10-minute clock-skew allowance for network shares).
+- **Actions:**
+  - A renamed or moved file whose local copy isn't known to differ is renamed, and its ledger entry follows it.
+  - A changed or removed file is moved to `_removed\<date>\`.
+  - A copy that was never verified is left for the download step to check; the confirm step warns about it.
+  - Missing files that weren't ticked last time stay missing.
+
 ### UI
 
 The UI never blocks the workers. They update thread-safe counters, and a 250 ms timer publishes those to the grid,
@@ -203,9 +263,10 @@ the totals and the log.
 
 ## Building from source
 
-Requires the .NET SDK 6.0 or newer on Windows.
+Requires the .NET SDK 6.0 or newer on Windows (8.0 for the tests).
 
 ```
+dotnet test tests/ArchiveOrgCollectionSync.Tests/ArchiveOrgCollectionSync.Tests.csproj
 dotnet build ArchiveOrgCollectionSync/ArchiveOrgCollectionSync.csproj -c Release
 dotnet publish ArchiveOrgCollectionSync/ArchiveOrgCollectionSync.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true
 ```
