@@ -290,7 +290,10 @@
                     return;
                 }
 
-                // Everything ticked is finished: fall through to a fresh scan, which picks up new files.
+                // Everything ticked is finished: fall through to a fresh scan, which picks up new files. Save the ticks
+                // first, so the scan restores the ones changed since the last run.
+                loaded.Capture(this.items);
+                SessionStore.Save(loaded);
             }
 
             if (!verifyAll && this.FindUnfinishedSession(collectionName, folder) is { } unfinished)
