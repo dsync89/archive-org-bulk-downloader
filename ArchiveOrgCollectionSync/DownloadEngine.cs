@@ -77,6 +77,44 @@ namespace ArchiveOrgCollectionSync
 
         public int ActiveConnections => Volatile.Read(ref this.activeConnections);
 
+        /// <summary>
+        /// Asks archive.org when the item last changed (a few bytes, no file list). Uploads, replacements, deletions and
+        /// metadata edits all move it forward.
+        /// </summary>
+        /// <returns>Unix seconds, or null when archive.org didn't say (e.g. the item doesn't exist).</returns>
+        public static async Task<long?> FetchItemLastUpdatedAsync(string collection, CancellationToken ct)
+        {
+            string url = $"https://archive.org/metadata/{Uri.EscapeDataString(collection)}/item_last_updated";
+            using var document = JsonDocument.Parse(await DownloadEngine.Http.GetStringAsync(url, ct));
+            return document.RootElement.TryGetProperty("result", out var result) && result.TryGetInt64(out long value) ? value : null;
+        }
+
+        /// <summary>MD5 of a local file as lowercase hex (Sync's Hash button).</summary>
+        public static async Task<string> HashMd5Async(string path, IProgress<long>? progress, CancellationToken ct)
+        {
+            using var md5 = MD5.Create();
+            await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20, true);
+            byte[] buffer = ArrayPool<byte>.Shared.Rent(1 << 20);
+
+            try
+            {
+                int read;
+
+                while ((read = await stream.ReadAsync(buffer.AsMemory(0, 1 << 20), ct)) > 0)
+                {
+                    md5.TransformBlock(buffer, 0, read, null, 0);
+                    progress?.Report(read);
+                }
+
+                md5.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+                return Convert.ToHexString(md5.Hash!).ToLowerInvariant();
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }
+
         public static async Task<File[]> FetchFileListAsync(string collection, CancellationToken ct)
         {
             string url = $"https://archive.org/download/{Uri.EscapeDataString(collection)}/{Uri.EscapeDataString(collection)}_files.xml";
@@ -240,7 +278,7 @@ namespace ArchiveOrgCollectionSync
                     if (await this.MatchesAsync(destination, item, ct))
                     {
                         bool hashed = this.UseMd5 && item.Md5.Length > 0;
-                        this.ledger?.Record(item, destination, hashed);
+                        this.ledger?.Record(item, destination, hashed, "check");
                         item.SetBytes(item.Size);
                         item.SetState(FileStatus.Skipped, hashed ? "skipped (md5 ok)" : "skipped (size ok)");
                         this.log.Write(LogLevel.Debug, hashed ? "Already exists with the correct checksum. Skipping." : "Already exists with the correct size. Skipping.", item.Name);
