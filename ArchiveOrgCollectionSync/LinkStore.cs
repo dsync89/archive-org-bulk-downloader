@@ -57,6 +57,13 @@ namespace ArchiveOrgCollectionSync
 
         public List<SnapshotInfo> Snapshots { get; set; } = new();
 
+        /// <summary>Gets or sets the last "Check all for updates" result (archive.org date, missing folder or item).</summary>
+        public LinkCheck? LastCheck { get; set; }
+
+        /// <summary>Gets a value indicating whether link.json exists (links seen only in session history aren't saved yet).</summary>
+        [JsonIgnore]
+        public bool IsSaved { get; set; }
+
         [JsonIgnore]
         public SnapshotInfo? Latest => this.Snapshots.Count > 0 ? this.Snapshots[^1] : null;
     }
@@ -87,7 +94,14 @@ namespace ArchiveOrgCollectionSync
 
             try
             {
-                return System.IO.File.Exists(path) ? JsonSerializer.Deserialize<LinkRecord>(System.IO.File.ReadAllText(path), LinkStore.JsonOptions) : null;
+                var link = System.IO.File.Exists(path) ? JsonSerializer.Deserialize<LinkRecord>(System.IO.File.ReadAllText(path), LinkStore.JsonOptions) : null;
+
+                if (link != null)
+                {
+                    link.IsSaved = true;
+                }
+
+                return link;
             }
             catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
             {
@@ -103,12 +117,15 @@ namespace ArchiveOrgCollectionSync
         /// </summary>
         public static LinkRecord GetOrCreate(string url, string collection, string folder, IReadOnlyList<SessionRecord> sessions)
         {
-            if (LinkStore.Find(collection, folder) is { } existing)
+            // A saved link without snapshots (e.g. relocated before its first Sync) still gets its snapshot #0.
+            var existing = LinkStore.Find(collection, folder);
+
+            if (existing is { Snapshots.Count: > 0 })
             {
                 return existing;
             }
 
-            var link = new LinkRecord
+            var link = existing ?? new LinkRecord
             {
                 Id = LinkStore.KeyFor(collection, folder),
                 Url = url,
@@ -157,6 +174,7 @@ namespace ArchiveOrgCollectionSync
                     Directory.CreateDirectory(Path.GetDirectoryName(path)!);
                     System.IO.File.WriteAllText(path + ".tmp", JsonSerializer.Serialize(link, LinkStore.JsonOptions));
                     System.IO.File.Move(path + ".tmp", path, true);
+                    link.IsSaved = true;
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
@@ -237,6 +255,7 @@ namespace ArchiveOrgCollectionSync
                     {
                         if (JsonSerializer.Deserialize<LinkRecord>(System.IO.File.ReadAllText(path), LinkStore.JsonOptions) is { } link)
                         {
+                            link.IsSaved = true;
                             links[link.Id] = link;
                         }
                     }
@@ -273,6 +292,58 @@ namespace ArchiveOrgCollectionSync
             }.Max();
 
             return links.Values.OrderByDescending(Activity).ToList();
+        }
+
+        /// <summary>
+        /// Points a link at the folder its files were moved to: the link, its sessions and its verified ledger all
+        /// follow, so history and verifications are kept. Nothing in the destination folders is touched.
+        /// </summary>
+        public static LinkRecord Relocate(LinkRecord link, string newFolder, IEnumerable<SessionRecord> sessions)
+        {
+            lock (LinkStore.Gate)
+            {
+                string oldFolder = link.Folder;
+                string oldId = link.Id;
+                string newId = LinkStore.KeyFor(link.Collection, newFolder);
+
+                if (Directory.Exists(LinkStore.LinkFolder(oldId)) && !oldId.Equals(newId, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (Directory.Exists(LinkStore.LinkFolder(newId)))
+                    {
+                        throw new IOException($"There is already a link for {link.Collection} in {newFolder}.");
+                    }
+
+                    Directory.Move(LinkStore.LinkFolder(oldId), LinkStore.LinkFolder(newId));
+                }
+
+                link.Id = newId;
+                link.Folder = newFolder;
+                link.LastCheck = null;
+                LinkStore.Save(link);
+
+                foreach (var session in sessions)
+                {
+                    session.Folder = newFolder;
+                    SessionStore.Save(session);
+                }
+
+                VerifiedLedger.Move(oldFolder, newFolder);
+                return link;
+            }
+        }
+
+        /// <summary>Deletes a link's record and snapshots (not its sessions, not any downloaded file).</summary>
+        public static void Forget(LinkRecord link)
+        {
+            lock (LinkStore.Gate)
+            {
+                if (Directory.Exists(LinkStore.LinkFolder(link.Id)))
+                {
+                    Directory.Delete(LinkStore.LinkFolder(link.Id), true);
+                }
+
+                link.IsSaved = false;
+            }
         }
 
         public static string LinkFolder(string id) => Path.Combine(LinkStore.Folder, id);
