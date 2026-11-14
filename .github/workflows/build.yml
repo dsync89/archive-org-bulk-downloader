@@ -15,6 +15,9 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Unit tests
+        run: dotnet test tests/ArchiveOrgCollectionSync.Tests/ArchiveOrgCollectionSync.Tests.csproj -c Release
+
       - name: Publish single-file exe
         run: dotnet publish ArchiveOrgCollectionSync/ArchiveOrgCollectionSync.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o publish
 

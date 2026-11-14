@@ -29,12 +29,22 @@ namespace ArchiveOrgCollectionSync
 
         public string Md5 { get; set; } = string.Empty;
 
+        /// <summary>Gets or sets the SHA-1 archive.org listed (empty for sessions saved before 1.5).</summary>
+        public string Sha1 { get; set; } = string.Empty;
+
+        public string Crc32 { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the archive.org upload time in Unix seconds as text (empty before 1.5).</summary>
+        public string Mtime { get; set; } = string.Empty;
+
         public FileStatus Status { get; set; }
 
         public string? Detail { get; set; }
 
         /// <summary>Gets or sets a value indicating whether the file is ticked; true for sessions saved before 1.4.</summary>
         public bool Checked { get; set; } = true;
+
+        public File ToFile() => new() { Name = this.Name, Size = this.Size, SizeSpecified = this.HasSize, Md5 = this.Md5, Sha1 = this.Sha1, Crc32 = this.Crc32, Mtime = this.Mtime };
     }
 
     /// <summary>One sync run (TeraCopy-style history entry), saved as sessions\&lt;Id&gt;.json next to &lt;Id&gt;.log.</summary>
@@ -115,6 +125,9 @@ namespace ArchiveOrgCollectionSync
                 Size = i.Size,
                 HasSize = i.HasSize,
                 Md5 = i.Md5,
+                Sha1 = i.Sha1,
+                Crc32 = i.Crc32,
+                Mtime = i.Mtime,
                 Status = i.CurrentStatus,
                 Detail = i.CurrentDetail,
                 Checked = i.IsChecked
@@ -125,7 +138,7 @@ namespace ArchiveOrgCollectionSync
         {
             return this.Files.Select(f =>
             {
-                var item = new FileItem(new File { Name = f.Name, Size = f.Size, SizeSpecified = f.HasSize, Md5 = f.Md5 }) { IsChecked = f.Checked };
+                var item = new FileItem(f.ToFile()) { IsChecked = f.Checked };
 
                 // Anything that was mid-flight when the session was saved goes back to the queue.
                 var status = f.Status is FileStatus.Checking or FileStatus.Downloading or FileStatus.Verifying ? FileStatus.Queued : f.Status;

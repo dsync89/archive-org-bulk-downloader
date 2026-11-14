@@ -23,6 +23,8 @@ namespace ArchiveOrgCollectionSync
                 : value.ToString(value >= 100 ? "0" : "0.0", CultureInfo.CurrentCulture) + " " + Format.Units[unit];
         }
 
+        public static string Plural(int count, string word) => $"{count} {word}{(count == 1 ? string.Empty : "s")}";
+
         public static string Speed(double bytesPerSecond)
         {
             return bytesPerSecond < 1 ? string.Empty : Format.Bytes((long)bytesPerSecond) + "/s";

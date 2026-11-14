@@ -29,6 +29,7 @@ namespace ArchiveOrgCollectionSync
         private long lastBytes;
         private double speed;
         private volatile bool isChecked = true;
+        private string change = string.Empty;
 
         public FileItem(File file)
         {
@@ -36,6 +37,9 @@ namespace ArchiveOrgCollectionSync
             this.Size = file.Size;
             this.HasSize = file.SizeSpecified;
             this.Md5 = file.Md5;
+            this.Sha1 = file.Sha1;
+            this.Crc32 = file.Crc32;
+            this.Mtime = file.Mtime;
             this.Status = FileStatus.Queued;
         }
 
@@ -49,6 +53,30 @@ namespace ArchiveOrgCollectionSync
         public bool HasSize { get; private set; }
 
         public string Md5 { get; private set; }
+
+        public string Sha1 { get; private set; }
+
+        public string Crc32 { get; private set; }
+
+        /// <summary>Gets the upload time on archive.org (Unix seconds as text; empty when unknown).</summary>
+        public string Mtime { get; private set; }
+
+        /// <summary>
+        /// Gets or sets the change glyph from the last sync (+ added, ~ renamed, ⇄ moved, * changed), shown in the Δ
+        /// column. Empty when the file didn't change. UI thread.
+        /// </summary>
+        public string Change
+        {
+            get => this.change;
+            set
+            {
+                if (this.change != value)
+                {
+                    this.change = value;
+                    this.OnPropertyChanged();
+                }
+            }
+        }
 
         /// <summary>
         /// Gets or sets a value indicating whether the user wants this file processed (the checkbox column). Unchecked
@@ -117,6 +145,11 @@ namespace ArchiveOrgCollectionSync
         /// <returns>True when the file changed on archive.org.</returns>
         public bool UpdateFrom(File file)
         {
+            // Hashes archive.org adds later (sha1, crc32) and the upload time are kept current without counting as a change.
+            this.Sha1 = file.Sha1;
+            this.Crc32 = file.Crc32;
+            this.Mtime = file.Mtime;
+
             if (this.Size == file.Size && this.HasSize == file.SizeSpecified && this.Md5 == file.Md5)
             {
                 return false;

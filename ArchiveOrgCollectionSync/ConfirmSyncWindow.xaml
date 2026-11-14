@@ -1,0 +1,38 @@
+<Window x:Class="ArchiveOrgCollectionSync.ConfirmSyncWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="Confirm sync"
+    Height="560"
+    Width="860"
+    MinHeight="320"
+    MinWidth="560"
+    WindowStartupLocation="CenterOwner"
+    ShowInTaskbar="False"
+    ResizeMode="CanResizeWithGrip" Icon="/archive.ico">
+    <DockPanel Margin="14">
+        <TextBlock DockPanel.Dock="Top" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8">These are all the changes Sync will make on disk.</TextBlock>
+        <ItemsControl x:Name="WarningsItemsControl" DockPanel.Dock="Top" Margin="0,0,0,8">
+            <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                    <TextBlock Text="{Binding}" Foreground="DarkOrange" TextWrapping="Wrap" Margin="0,2" />
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+        <DockPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button Height="26" MinWidth="90" Padding="10,0" Margin="6,0,0,0" IsCancel="True" Click="BackButton_Click">Back</Button>
+                <Button x:Name="ApplyButton" Height="26" MinWidth="90" Padding="10,0" Margin="6,0,0,0" IsDefault="True" Click="ApplyButton_Click">Apply &amp; download</Button>
+            </StackPanel>
+            <TextBlock x:Name="NoteTextBlock" VerticalAlignment="Center" TextWrapping="Wrap" Foreground="Gray" />
+        </DockPanel>
+        <ListView x:Name="ActionsListView">
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="Action" DisplayMemberBinding="{Binding Verb}" Width="90" />
+                    <GridViewColumn Header="File" DisplayMemberBinding="{Binding Text}" Width="600" />
+                    <GridViewColumn Header="Size" DisplayMemberBinding="{Binding SizeText}" Width="80" />
+                </GridView>
+            </ListView.View>
+        </ListView>
+    </DockPanel>
+</Window>

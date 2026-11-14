@@ -46,6 +46,9 @@
         private double overallSpeed;
         private long sessionBaseBytes;
         private double sessionBaseSeconds;
+        private SyncWindow? syncWindow;
+        private CancellationTokenSource? linkCheck;
+        private readonly DispatcherTimer linkTimer;
 
         public MainWindow()
         {
@@ -65,6 +68,14 @@
 
             this.timer = new DispatcherTimer(TimeSpan.FromMilliseconds(250), DispatcherPriority.Background, (_, _) => this.Tick(), this.Dispatcher);
             this.timer.Start();
+
+            // Re-read the link line (and ask archive.org whether it changed) shortly after the URL or folder stops changing.
+            this.linkTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(700), DispatcherPriority.Background, (_, _) =>
+            {
+                this.linkTimer!.Stop();
+                this.RefreshLinkInfo(checkOnline: true);
+            }, this.Dispatcher);
+            this.linkTimer.Start();
 
             this.UpdateButtons();
             this.UrlTextBox.Focus();
@@ -189,6 +200,8 @@
             if (this.IsLoaded)
             {
                 this.UpdateButtons();
+                this.linkTimer.Stop();
+                this.linkTimer.Start();
             }
         }
 
@@ -277,7 +290,10 @@
                     return;
                 }
 
-                // Everything ticked is finished: fall through to a fresh scan, which picks up new files.
+                // Everything ticked is finished: fall through to a fresh scan, which picks up new files. Save the ticks
+                // first, so the scan restores the ones changed since the last run.
+                loaded.Capture(this.items);
+                SessionStore.Save(loaded);
             }
 
             if (!verifyAll && this.FindUnfinishedSession(collectionName, folder) is { } unfinished)
@@ -366,7 +382,7 @@
         /// <paramref name="selector"/> (skipped when <paramref name="process"/> is false, for Scan). Pause, Stop and
         /// errors all end here with the session saved.
         /// </summary>
-        private async Task RunAsync(bool scan, Func<FileItem, bool> selector, bool reverifyAll = false, bool process = true)
+        private async Task RunAsync(bool scan, Func<FileItem, bool> selector, bool reverifyAll = false, bool process = true, IReadOnlyList<LogEntry>? preamble = null)
         {
             if (this.running || this.session == null)
             {
@@ -387,6 +403,12 @@
             current.State = SessionState.Running;
             current.Ended = null;
             this.log.Open(SessionStore.LogPath(current));
+
+            foreach (var entry in preamble ?? Array.Empty<LogEntry>())
+            {
+                this.log.Write(entry.Level, entry.Message, entry.File.Length > 0 ? entry.File : null);
+            }
+
             this.log.Write(
                 LogLevel.Info,
                 !process ? "Scan: listing files only; tick the ones you want, then press Start."
@@ -412,6 +434,7 @@
 
                     this.LoadItems(wanted.Select(f => new FileItem(f)));
                     this.RestoreChecks(current);
+                    this.RecordSnapshot(current, files, process ? "start" : "scan");
                     this.log.Write(
                         LogLevel.Info,
                         current.Options.OriginalsOnly
@@ -483,6 +506,7 @@
             this.SetStatus(summary, level);
             this.RefreshSessions();
             this.UpdateButtons();
+            this.RefreshLinkInfo(checkOnline: false);
 
             if (this.closeAfterRun)
             {
@@ -585,6 +609,7 @@
             }
 
             this.log.Write(LogLevel.Info, $"File list refreshed: {changed} file(s) changed, {removed} no longer listed.");
+            this.RecordSnapshot(current, files, "start");
             return files;
         }
 
@@ -746,22 +771,26 @@
             bool hasQueued = this.items.Any(i => i.IsChecked && i.CurrentStatus == FileStatus.Queued);
             bool hasFailed = this.items.Any(i => i.IsChecked && i.CurrentStatus == FileStatus.Failed);
 
-            this.ScanButton.IsEnabled = !this.running && hasInput;
-            this.StartButton.IsEnabled = !this.running && hasInput;
-            this.VerifyAllButton.IsEnabled = !this.running && hasInput;
-            bool canResume = !this.running && this.session != null && hasQueued;
+            // While the Sync window is open it may rename or move files, so nothing else may start.
+            bool idle = !this.running && this.syncWindow == null;
+            this.ScanButton.IsEnabled = idle && hasInput;
+            this.StartButton.IsEnabled = idle && hasInput;
+            this.VerifyAllButton.IsEnabled = idle && hasInput;
+            this.SyncButton.IsEnabled = idle && hasInput;
+            bool canResume = idle && this.session != null && hasQueued;
             this.PauseButton.Content = canResume ? "Resume" : "Pause";
             this.PauseButton.IsEnabled = this.running || canResume;
             this.StopButton.IsEnabled = this.running;
-            this.RetryFailedButton.IsEnabled = !this.running && this.session != null && hasFailed;
-            this.RetrySelectedMenuItem.IsEnabled = !this.running && this.session != null;
+            this.RetryFailedButton.IsEnabled = idle && this.session != null && hasFailed;
+            this.RetrySelectedMenuItem.IsEnabled = idle && this.session != null;
 
             this.UrlTextBox.IsEnabled =
                 this.FolderTextBox.IsEnabled =
                 this.PasteButton.IsEnabled =
                 this.BrowseButton.IsEnabled =
+                this.LinksButton.IsEnabled =
                 this.OptionsPanel.IsEnabled =
-                !this.running;
+                idle;
 
             this.UpdateSessionButtons();
         }
@@ -1012,6 +1041,371 @@
             }
         }
 
+        // ----- Links and Sync -----
+
+        private static IEnumerable<File> OriginalsFilter(IEnumerable<File> files, SyncOptions options)
+        {
+            return options.OriginalsOnly
+                ? files.Where(f => !f.OldVersion && (f.Source.Length == 0 || f.Source.Equals("original", StringComparison.OrdinalIgnoreCase)))
+                : files;
+        }
+
+        private static string WhenUnix(long? unix) => unix is { } s ? DateTimeOffset.FromUnixTimeSeconds(s).LocalDateTime.ToString("yyyy-MM-dd HH:mm") : "?";
+
+        /// <summary>Sessions for one collection and folder, newest first.</summary>
+        private static List<SessionRecord> SessionsFor(string collection, string folder)
+        {
+            return SessionStore.LoadAll()
+                .Where(r => r.Collection.Equals(collection, StringComparison.OrdinalIgnoreCase) && MainWindow.SameFolder(r.Folder, folder))
+                .ToList();
+        }
+
+        private static LinkRecord? FindLink(string collection, string folder)
+        {
+            try
+            {
+                return LinkStore.Find(collection, folder);
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Compares a freshly read file list with the link's latest snapshot in the background, marks the changed rows
+        /// in the Δ column and logs a summary. Start saves the list as a new snapshot (it acts on it); Scan doesn't, so a
+        /// Sync after a Scan still shows the changes and can rename and move files instead of downloading them again.
+        /// </summary>
+        private void RecordSnapshot(SessionRecord current, File[] files, string source)
+        {
+            var sessions = MainWindow.SessionsFor(current.Collection, current.Folder).Where(s => s.Id != current.Id).ToList();
+            bool save = source != "scan";
+            bool originalsOnly = current.Options.OriginalsOnly;
+
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    SnapshotInfo? previous;
+                    List<DiffEntry>? changes = null;
+
+                    lock (LinkStore.Gate)
+                    {
+                        var link = LinkStore.GetOrCreate(current.Url, current.Collection, current.Folder, sessions);
+                        previous = link.Latest;
+
+                        if (previous != null)
+                        {
+                            var older = LinkStore.LoadSnapshot(link, previous);
+                            changes = SnapshotDiff.Compare(
+                                older.Where(f => SnapshotDiff.IsTracked(f, current.Collection, originalsOnly)),
+                                files.Where(f => SnapshotDiff.IsTracked(f, current.Collection, originalsOnly)))
+                                .Where(e => e.Kind != ChangeKind.Touched)
+                                .ToList();
+                        }
+
+                        if (save && LinkStore.AddSnapshot(link, files, source, DateTime.Now) != null)
+                        {
+                            LinkStore.Save(link);
+                        }
+                    }
+
+                    this.Dispatcher.BeginInvoke(() => this.RefreshLinkInfo(checkOnline: false));
+
+                    if (previous != null && changes is { Count: > 0 })
+                    {
+                        this.Dispatcher.BeginInvoke(() => this.ShowListChanges(current, previous, changes, save));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    this.log.Write(LogLevel.Debug, $"Could not compare with the link's snapshots. - {ex.Message}");
+                }
+            });
+        }
+
+        private void ShowListChanges(SessionRecord current, SnapshotInfo previous, List<DiffEntry> changes, bool saved)
+        {
+            if (this.session != current)
+            {
+                return;
+            }
+
+            var byName = this.items.GroupBy(i => i.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+            foreach (var change in changes.Where(c => c.B != null))
+            {
+                if (byName.TryGetValue(change.Name, out var item))
+                {
+                    item.Change = change.Glyph;
+                }
+            }
+
+            string summary = MainWindow.ChangeSummary(changes);
+            this.log.Write(LogLevel.Warn, $"archive.org changed since your snapshot of {previous.WhenText}: {summary}. The Δ column marks them" + (saved ? "." : "; ⟳ Sync shows the details and can rename or move files instead of downloading them again."));
+
+            if (!saved)
+            {
+                this.ChangeBannerTextBlock.Text = $"▲ {Format.Plural(changes.Count, "change")} on archive.org since your snapshot of {previous.WhenText}: {summary}. Review them before Start, so renamed files are renamed instead of downloaded again.";
+                this.ChangeBanner.Visibility = Visibility.Visible;
+            }
+        }
+
+        private static string ChangeSummary(IEnumerable<DiffEntry> changes)
+        {
+            return string.Join(
+                "  ",
+                changes.GroupBy(c => c.Kind).OrderBy(g => g.Key).Select(g => $"{SnapshotDiff.Glyph(g.Key)}{g.Count()} {g.Key.ToString().ToLowerInvariant()}"));
+        }
+
+        /// <summary>Shows the link line under the folder and, with <paramref name="checkOnline"/>, asks archive.org whether the item changed since the last sync.</summary>
+        private async void RefreshLinkInfo(bool checkOnline)
+        {
+            this.linkCheck?.Cancel();
+            string? collection = MainWindow.ParseCollectionName(this.UrlTextBox.Text.Trim());
+            string folder = this.FolderTextBox.Text.Trim();
+
+            if (collection == null || folder.Length == 0)
+            {
+                this.LinkTextBlock.Text = string.Empty;
+                this.ChangeBanner.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            var link = MainWindow.FindLink(collection, folder);
+
+            if (link?.Latest is not { } latest)
+            {
+                this.LinkTextBlock.Text = "No sync history for this link yet. ⟳ Sync takes a baseline from what you already downloaded.";
+                this.ChangeBanner.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            this.LinkTextBlock.Text = $"{Format.Plural(link.Snapshots.Count, "snapshot")} · latest {latest.WhenText} ({latest.Source}, {latest.FileCount} files)"
+                + (link.LastChecked is { } checkedAt ? $" · last Sync {checkedAt:yyyy-MM-dd HH:mm}" : string.Empty)
+                + (link.ItemLastUpdated != null ? $" · item updated {MainWindow.WhenUnix(link.ItemLastUpdated)}" : string.Empty);
+
+            if (!checkOnline || link.ItemLastUpdated == null || this.running || this.syncWindow != null)
+            {
+                return;
+            }
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            this.linkCheck = cts;
+
+            try
+            {
+                long? now = await DownloadEngine.FetchItemLastUpdatedAsync(collection, cts.Token);
+
+                if (this.linkCheck != cts)
+                {
+                    return;
+                }
+
+                if (now > link.ItemLastUpdated)
+                {
+                    this.ChangeBannerTextBlock.Text = $"▲ archive.org updated {collection} on {MainWindow.WhenUnix(now)}, after your last Sync ({MainWindow.WhenUnix(link.ItemLastUpdated)}). Review what changed before downloading.";
+                    this.ChangeBanner.Visibility = Visibility.Visible;
+                }
+                else
+                {
+                    this.ChangeBanner.Visibility = Visibility.Collapsed;
+                }
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or System.Net.Http.HttpRequestException or System.Text.Json.JsonException)
+            {
+                // Offline or archive.org busy: the banner is a hint only.
+            }
+            finally
+            {
+                if (this.linkCheck == cts)
+                {
+                    this.linkCheck = null;
+                }
+            }
+        }
+
+        private void LinksButton_Click(object sender, RoutedEventArgs e)
+        {
+            var menu = new ContextMenu { PlacementTarget = this.LinksButton, Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom };
+
+            foreach (var link in LinkStore.All(SessionStore.LoadAll()).Take(40))
+            {
+                // A TextBlock header, so underscores in collection names aren't taken as access keys.
+                var item = new MenuItem
+                {
+                    Header = new TextBlock
+                    {
+                        Text = $"{link.Collection}  →  {link.Folder}"
+                            + (link.Latest is { } latest ? $"    ({Format.Plural(link.Snapshots.Count, "snapshot")}, latest {latest.WhenText})" : "    (not synced yet)")
+                    }
+                };
+                item.Click += (_, _) =>
+                {
+                    this.UrlTextBox.Text = link.Url.Length > 0 ? link.Url : $"https://archive.org/details/{link.Collection}";
+                    this.FolderTextBox.Text = link.Folder;
+                };
+                menu.Items.Add(item);
+            }
+
+            if (menu.Items.Count == 0)
+            {
+                menu.Items.Add(new MenuItem { Header = new TextBlock { Text = "No links yet: Start or Sync a collection first." }, IsEnabled = false });
+            }
+
+            menu.IsOpen = true;
+        }
+
+        private async void SyncButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (this.syncWindow != null)
+            {
+                this.syncWindow.Show();
+                this.syncWindow.Activate();
+                return;
+            }
+
+            if (this.running || !this.TryReadTarget(out string url, out string collectionName, out string folder))
+            {
+                return;
+            }
+
+            this.SaveSettings();
+            this.ChangeBanner.Visibility = Visibility.Collapsed;
+            var window = new SyncWindow(url, collectionName, folder, this.ReadOptions(), MainWindow.SessionsFor(collectionName, folder)) { Owner = this };
+            this.syncWindow = window;
+            window.StatusChanged += (_, _) => this.UpdateSyncStrip();
+            window.IsVisibleChanged += (_, _) => this.UpdateSyncStrip();
+            window.Closed += (_, _) =>
+            {
+                this.syncWindow = null;
+                this.UpdateSyncStrip();
+                this.UpdateButtons();
+                this.RefreshLinkInfo(checkOnline: false);
+            };
+            window.Applied += this.SyncWindow_Applied;
+            this.UpdateButtons();
+            window.Show();
+            await window.StartAsync(force: sender is Button { Content: "Review changes…" });
+        }
+
+        private void BannerReviewButton_Click(object sender, RoutedEventArgs e)
+        {
+            this.SyncButton_Click(sender, e);
+        }
+
+        private void BannerDismissButton_Click(object sender, RoutedEventArgs e)
+        {
+            this.ChangeBanner.Visibility = Visibility.Collapsed;
+        }
+
+        private void UpdateSyncStrip()
+        {
+            var window = this.syncWindow;
+
+            if (window == null || window.IsVisible || window.StatusText.Length == 0)
+            {
+                this.SyncStrip.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            this.SyncStrip.Visibility = Visibility.Visible;
+            this.SyncStripTextBlock.Text = window.StatusText + (window.IsBusy ? string.Empty : "  (click ⤢ Show)");
+            this.SyncStripProgressBar.Visibility = window.IsBusy ? Visibility.Visible : Visibility.Collapsed;
+            this.SyncStripProgressBar.IsIndeterminate = window.StatusFraction == null;
+            this.SyncStripProgressBar.Value = (window.StatusFraction ?? 0) * this.SyncStripProgressBar.Maximum;
+        }
+
+        private void SyncStripShowButton_Click(object sender, RoutedEventArgs e)
+        {
+            this.syncWindow?.Show();
+            this.syncWindow?.Activate();
+        }
+
+        private void SyncStripCancelButton_Click(object sender, RoutedEventArgs e)
+        {
+            this.syncWindow?.Close();
+        }
+
+        /// <summary>
+        /// After Sync renamed and moved files: loads archive.org's current list with the ticks Sync decided, logs what
+        /// happened on disk, and runs the download for whatever is now missing. Unchanged files are skipped from the
+        /// ledger without hashing, so this costs little more than the downloads themselves.
+        /// </summary>
+        private async void SyncWindow_Applied(SyncOutcome outcome)
+        {
+            var link = outcome.Link;
+            var options = this.ReadOptions();
+            string url = link.Url.Length > 0 ? link.Url : this.UrlTextBox.Text.Trim();
+            var current = SessionStore.Create(url, link.Collection, link.Folder, options);
+            this.session = current;
+            this.LoadItems(MainWindow.OriginalsFilter(outcome.Live, options).Select(f => new FileItem(f)));
+            this.logEntries.Clear();
+            this.RestoreChecks(current);
+
+            var byName = this.items.GroupBy(i => i.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+            foreach (var row in outcome.Rows.Where(r => r.Entry.B != null))
+            {
+                if (byName.TryGetValue(row.Name, out var item))
+                {
+                    item.IsChecked = row.IsActionable ? row.IsChecked : row.Wanted;
+
+                    if (row.Kind != ChangeKind.Touched)
+                    {
+                        item.Change = row.Glyph;
+                    }
+                }
+            }
+
+            var preamble = new List<LogEntry>
+            {
+                new(LogLevel.Info, $"Sync: {MainWindow.ChangeSummary(outcome.Rows.Where(r => r.Kind != ChangeKind.Touched).Select(r => r.Entry))} on archive.org; "
+                    + $"{outcome.Rows.Count(r => r.IsChecked)} change(s) applied, {outcome.Rows.Count(r => r.IsActionable && !r.IsChecked)} left as they are.", null)
+            };
+
+            foreach (var move in outcome.Moves)
+            {
+                bool renamed = !move.To.StartsWith(outcome.RemovedFolder, StringComparison.OrdinalIgnoreCase);
+                string from = Path.GetRelativePath(link.Folder, move.From).Replace('\\', '/');
+                string to = Path.GetRelativePath(link.Folder, move.To).Replace('\\', '/');
+                preamble.Add(renamed
+                    ? new LogEntry(LogLevel.Success, $"Renamed on disk to match archive.org (no download), was {from}.", to)
+                    : new LogEntry(LogLevel.Info, $"Moved to {to} (removed or replaced on archive.org).", from));
+            }
+
+            preamble.AddRange(outcome.Errors.Select(error => new LogEntry(LogLevel.Error, "Sync could not rename or move a file. - " + error, null)));
+
+            bool download = outcome.Rows.Any(r => r.IsChecked && r.Action is SyncAction.Download or SyncAction.Replace or SyncAction.Check);
+
+            if (download)
+            {
+                this.Tabs.SelectedIndex = 0;
+                await this.RunAsync(false, i => i.IsChecked && i.CurrentStatus == FileStatus.Queued, preamble: preamble);
+                return;
+            }
+
+            this.log.Open(SessionStore.LogPath(current));
+
+            foreach (var entry in preamble)
+            {
+                this.log.Write(entry.Level, entry.Message, entry.File.Length > 0 ? entry.File : null);
+            }
+
+            string summary = $"Sync applied: {Format.Plural(outcome.Moves.Count, "file")} renamed or moved, nothing to download.";
+            this.log.Write(outcome.Errors.Count > 0 ? LogLevel.Error : LogLevel.Success, summary);
+            this.log.Close();
+            current.State = SessionState.Scanned;
+            current.Ended = DateTime.Now;
+            current.Capture(this.items);
+            SessionStore.Save(current);
+            this.SetStatus(summary, outcome.Errors.Count > 0 ? LogLevel.Error : LogLevel.Success);
+            this.Tick();
+            this.RefreshSessions();
+            this.UpdateButtons();
+        }
+
         // ----- Sessions tab -----
 
         private SessionRecord? SelectedSession => this.SessionsListView.SelectedItem as SessionRecord;
@@ -1028,7 +1422,7 @@
         private void UpdateSessionButtons()
         {
             var record = this.SelectedSession;
-            bool canLoad = record != null && !this.running;
+            bool canLoad = record != null && !this.running && this.syncWindow == null;
 
             this.SessionOpenButton.IsEnabled = canLoad;
             this.SessionResumeButton.IsEnabled = canLoad && record!.HasQueued;
@@ -1264,6 +1658,17 @@
         private void Window_Closing(object sender, CancelEventArgs e)
         {
             this.SaveSettings();
+
+            if (this.syncWindow is { } sync)
+            {
+                if (sync.IsBusy && MessageBox.Show(this, "Sync is still checking. Cancel it and exit?", "Exit", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+                {
+                    e.Cancel = true;
+                    return;
+                }
+
+                sync.Abandon();
+            }
 
             if (!this.running)
             {

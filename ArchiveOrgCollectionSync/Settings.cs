@@ -7,9 +7,13 @@ namespace ArchiveOrgCollectionSync
     /// <summary>Last-used URL, folder and options, kept in %LocalAppData%\ArchiveOrgCollectionSync\settings.json.</summary>
     public sealed class Settings
     {
-        public static readonly string AppDataFolder = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "ArchiveOrgCollectionSync");
+        /// <summary>
+        /// Where settings, sessions, ledgers and links live. AOCS_APPDATA overrides it, so tests (and test runs of the
+        /// app) never touch the real history.
+        /// </summary>
+        public static readonly string AppDataFolder = Environment.GetEnvironmentVariable("AOCS_APPDATA") is { Length: > 0 } custom
+            ? custom
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ArchiveOrgCollectionSync");
 
         private static readonly string FilePath = Path.Combine(Settings.AppDataFolder, "settings.json");
 

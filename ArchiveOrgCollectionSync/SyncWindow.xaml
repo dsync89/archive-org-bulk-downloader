@@ -1,0 +1,152 @@
+<Window x:Class="ArchiveOrgCollectionSync.SyncWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="Sync"
+    Height="680"
+    Width="1120"
+    MinHeight="420"
+    MinWidth="760"
+    WindowStartupLocation="CenterOwner"
+    ShowInTaskbar="False"
+    ResizeMode="CanResizeWithGrip" Icon="/archive.ico"
+    Closing="Window_Closing">
+    <Window.Resources>
+        <Style x:Key="BarButton" TargetType="Button">
+            <Setter Property="Height" Value="26" />
+            <Setter Property="MinWidth" Value="90" />
+            <Setter Property="Margin" Value="6,0,0,0" />
+            <Setter Property="Padding" Value="10,0" />
+        </Style>
+        <Style x:Key="KindToggle" TargetType="CheckBox">
+            <Setter Property="Margin" Value="0,0,14,0" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <Style x:Key="RightCell" TargetType="TextBlock">
+            <Setter Property="HorizontalAlignment" Value="Right" />
+        </Style>
+    </Window.Resources>
+    <DockPanel Margin="14">
+        <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+            <TextBlock x:Name="HeaderTextBlock" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+            <TextBlock x:Name="SubTextBlock" Foreground="Gray" Margin="0,2,0,0" TextTrimming="CharacterEllipsis" />
+        </StackPanel>
+
+        <!-- Footer: always visible, buttons change with the step. -->
+        <DockPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button x:Name="HashButton" Style="{StaticResource BarButton}" Visibility="Collapsed" Click="HashButton_Click"
+                    ToolTip="MD5 the local files Sync couldn't vouch for, so the Local column says exactly which version you have." />
+                <Button x:Name="SnapshotOnlyButton" Style="{StaticResource BarButton}" Visibility="Collapsed" Click="SnapshotOnlyButton_Click"
+                    ToolTip="Remember this list as the new baseline without touching any file.">Save snapshot only</Button>
+                <Button x:Name="CompareAnywayButton" Style="{StaticResource BarButton}" Visibility="Collapsed" Click="CompareAnywayButton_Click"
+                    ToolTip="Read the file list and compare it with your last snapshot even though archive.org reports no change.">Compare anyway</Button>
+                <Button x:Name="ConfirmButton" Style="{StaticResource BarButton}" Visibility="Collapsed" Click="ConfirmButton_Click" IsDefault="True">Review &amp; confirm…</Button>
+                <Button x:Name="BackgroundButton" Style="{StaticResource BarButton}" Click="BackgroundButton_Click"
+                    ToolTip="Hide this window and keep going; the status strip in the main window shows progress and reopens it.">Run in background</Button>
+                <Button x:Name="CancelButton" Style="{StaticResource BarButton}" Click="CancelButton_Click" IsCancel="True">Cancel</Button>
+            </StackPanel>
+            <TextBlock x:Name="FooterTextBlock" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+        </DockPanel>
+
+        <Grid>
+            <!-- Step 1: checking. Each stage ticks off as it finishes. -->
+            <StackPanel x:Name="StagesPanel">
+                <ItemsControl x:Name="StagesItemsControl">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Margin="0,3">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="24" />
+                                    <ColumnDefinition Width="200" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="{Binding Glyph}" />
+                                <TextBlock Grid.Column="1" Text="{Binding Title}" />
+                                <TextBlock Grid.Column="2" Text="{Binding Detail}" Foreground="Gray" TextTrimming="CharacterEllipsis" />
+                            </Grid>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <ProgressBar x:Name="StageProgressBar" Height="18" Margin="24,10,0,0" Maximum="1000" />
+                <TextBlock x:Name="StageDetailTextBlock" Margin="24,4,0,0" Foreground="Gray" TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+
+            <!-- Archive.org reports no change since the last sync. -->
+            <StackPanel x:Name="UpToDatePanel" Visibility="Collapsed" VerticalAlignment="Center" HorizontalAlignment="Center">
+                <TextBlock x:Name="UpToDateTextBlock" FontSize="15" TextAlignment="Center" TextWrapping="Wrap" MaxWidth="640" />
+            </StackPanel>
+
+            <!-- Step 2: review the diff. Nothing on disk has been touched yet. -->
+            <DockPanel x:Name="ReviewPanel" Visibility="Collapsed">
+                <TextBlock x:Name="BaselineTextBlock" DockPanel.Dock="Top" Margin="0,0,0,8" TextWrapping="Wrap" />
+                <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <TextBlock VerticalAlignment="Center" Margin="0,0,6,0">Search:</TextBlock>
+                        <TextBox x:Name="SearchTextBox" Width="180" Padding="2" TextChanged="Filter_Changed" />
+                    </StackPanel>
+                    <WrapPanel>
+                        <CheckBox x:Name="ShowAdded" Style="{StaticResource KindToggle}" IsChecked="True" Click="Filter_Changed" />
+                        <CheckBox x:Name="ShowRemoved" Style="{StaticResource KindToggle}" IsChecked="True" Click="Filter_Changed" />
+                        <CheckBox x:Name="ShowRenamed" Style="{StaticResource KindToggle}" IsChecked="True" Click="Filter_Changed" />
+                        <CheckBox x:Name="ShowMoved" Style="{StaticResource KindToggle}" IsChecked="True" Click="Filter_Changed" />
+                        <CheckBox x:Name="ShowChanged" Style="{StaticResource KindToggle}" IsChecked="True" Click="Filter_Changed" />
+                        <CheckBox x:Name="ShowTouched" Style="{StaticResource KindToggle}" IsChecked="False" Click="Filter_Changed"
+                            ToolTip="Same content, only archive.org's upload time moved. Nothing to do; shown for the record." />
+                    </WrapPanel>
+                </DockPanel>
+                <DataGrid x:Name="FoldersDataGrid" DockPanel.Dock="Top" Height="118" Margin="0,0,0,8" AutoGenerateColumns="False" IsReadOnly="True"
+                    HeadersVisibility="Column" GridLinesVisibility="None" SelectionMode="Single" CanUserAddRows="False"
+                    SelectionChanged="FoldersDataGrid_SelectionChanged" ToolTip="Click a folder to show only its changes.">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Folder" Binding="{Binding FolderText}" Width="*" />
+                        <DataGridTextColumn Header="Files" Binding="{Binding Files}" Width="60" ElementStyle="{StaticResource RightCell}" />
+                        <DataGridTextColumn Header="+" Binding="{Binding Added}" Width="40" ElementStyle="{StaticResource RightCell}" />
+                        <DataGridTextColumn Header="−" Binding="{Binding Removed}" Width="40" ElementStyle="{StaticResource RightCell}" />
+                        <DataGridTextColumn Header="~" Binding="{Binding Renamed}" Width="40" ElementStyle="{StaticResource RightCell}" />
+                        <DataGridTextColumn Header="⇄" Binding="{Binding Moved}" Width="40" ElementStyle="{StaticResource RightCell}" />
+                        <DataGridTextColumn Header="*" Binding="{Binding Changed}" Width="40" ElementStyle="{StaticResource RightCell}" />
+                    </DataGrid.Columns>
+                </DataGrid>
+                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,4">
+                    <TextBlock VerticalAlignment="Center" Margin="0,0,6,0">Tick:</TextBlock>
+                    <Button Padding="8,1" Margin="0,0,4,0" Click="TickAllButton_Click" ToolTip="Tick every visible row that would change something.">All</Button>
+                    <Button Padding="8,1" Margin="0,0,4,0" Click="TickNoneButton_Click" ToolTip="Untick every visible row: those files are left exactly as they are.">None</Button>
+                    <TextBlock VerticalAlignment="Center" Margin="8,0,0,0" Foreground="Gray">Unticked rows are left as they are on disk (and unticked in the file list).</TextBlock>
+                </StackPanel>
+                <DataGrid x:Name="RowsDataGrid" AutoGenerateColumns="False" IsReadOnly="True" HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                    HorizontalGridLinesBrush="#FFE6E6E6" SelectionMode="Extended" CanUserAddRows="False"
+                    EnableRowVirtualization="True" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
+                    PreviewKeyDown="RowsDataGrid_PreviewKeyDown">
+                    <DataGrid.RowStyle>
+                        <Style TargetType="DataGridRow">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsActionable}" Value="False">
+                                    <Setter Property="Foreground" Value="Gray" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding HasWarning}" Value="True">
+                                    <Setter Property="Foreground" Value="DarkOrange" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </DataGrid.RowStyle>
+                    <DataGrid.Columns>
+                        <DataGridTemplateColumn Width="28" SortMemberPath="IsChecked">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <CheckBox IsChecked="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding IsActionable}"
+                                        Focusable="False" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,2,0,0" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTextColumn Header="Δ" Binding="{Binding Glyph}" Width="26" SortMemberPath="Kind" />
+                        <DataGridTextColumn Header="Name" Binding="{Binding NameText}" Width="*" SortMemberPath="Name" />
+                        <DataGridTextColumn Header="A (snapshot)" Binding="{Binding AText}" Width="170" />
+                        <DataGridTextColumn Header="B (archive.org now)" Binding="{Binding BText}" Width="170" />
+                        <DataGridTextColumn Header="Local" Binding="{Binding LocalText}" Width="80" SortMemberPath="Local" />
+                        <DataGridTextColumn Header="Action" Binding="{Binding ActionText}" Width="230" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </DockPanel>
+        </Grid>
+    </DockPanel>
+</Window>
