@@ -22,6 +22,18 @@ namespace ArchiveOrgCollectionSync
 
         /// <summary>Gets or sets a value indicating whether the file was hashed (MD5) rather than only size-checked.</summary>
         public bool Md5Verified { get; set; }
+
+        /// <summary>Gets or sets the SHA-1 archive.org listed for this content (empty in ledgers written before 1.5).</summary>
+        public string Sha1 { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the CRC32 archive.org listed for this content (empty in ledgers written before 1.5).</summary>
+        public string Crc32 { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Gets or sets where the proof came from: "download", "check" (an existing file was checked), "hash" (Sync's
+        /// Hash button) or "session &lt;id&gt;" (taken over from an earlier session by Sync's baseline).
+        /// </summary>
+        public string Source { get; set; } = string.Empty;
     }
 
     /// <summary>
@@ -92,7 +104,35 @@ namespace ArchiveOrgCollectionSync
             return info.Exists && info.Length == entry.LocalLength && info.LastWriteTimeUtc == entry.LocalWriteUtc;
         }
 
-        public void Record(FileItem item, string localPath, bool md5Verified)
+        /// <summary>
+        /// Returns the entry for <paramref name="name"/> when the file on disk still has the length and write time it had
+        /// when it was verified, whatever archive.org lists now. Sync uses it to tell which version you have.
+        /// </summary>
+        public LedgerEntry? Current(string name, FileInfo local)
+        {
+            return this.Files.TryGetValue(name, out var entry)
+                && local.Exists
+                && local.Length == entry.LocalLength
+                && local.LastWriteTimeUtc == entry.LocalWriteUtc
+                ? entry
+                : null;
+        }
+
+        public void Put(string name, LedgerEntry entry)
+        {
+            this.Files[name] = entry;
+        }
+
+        /// <summary>Moves an entry to a new name after Sync renamed the file on disk (a rename keeps the write time).</summary>
+        public void Rename(string oldName, string newName)
+        {
+            if (this.Files.TryRemove(oldName, out var entry))
+            {
+                this.Files[newName] = entry;
+            }
+        }
+
+        public void Record(FileItem item, string localPath, bool md5Verified, string source = "download")
         {
             var info = new FileInfo(localPath);
 
@@ -108,7 +148,10 @@ namespace ArchiveOrgCollectionSync
                 LocalLength = info.Length,
                 LocalWriteUtc = info.LastWriteTimeUtc,
                 VerifiedUtc = DateTime.UtcNow,
-                Md5Verified = md5Verified
+                Md5Verified = md5Verified,
+                Sha1 = item.Sha1,
+                Crc32 = item.Crc32,
+                Source = source
             };
 
             if (Interlocked.Increment(ref this.unsaved) % VerifiedLedger.SaveEvery == 0)
