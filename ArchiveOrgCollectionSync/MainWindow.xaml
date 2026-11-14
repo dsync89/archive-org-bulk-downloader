@@ -162,6 +162,8 @@
                                 <MenuItem Header="Check Highlighted" InputGestureText="Space" Click="CheckHighlightedMenuItem_Click" />
                                 <MenuItem Header="Uncheck Highlighted" Click="UncheckHighlightedMenuItem_Click" />
                                 <Separator />
+                                <MenuItem Header="History of This File" Click="HistoryMenuItem_Click"
+                                    ToolTip="Every version of this file across your snapshots and archive.org's kept copies (Links tab)." />
                                 <MenuItem Header="Open Containing Folder" Click="OpenFolderMenuItem_Click" />
                                 <MenuItem Header="Copy Name" Click="CopyNameMenuItem_Click" />
                                 <MenuItem Header="Copy Download URL" Click="CopyUrlMenuItem_Click" />
@@ -209,8 +211,59 @@
                     </DataGrid>
                 </DockPanel>
             </TabItem>
-            <TabItem Header="Sessions" Selector.Selected="SessionsTabItem_Selected">
-                <DockPanel Margin="10">
+            <TabItem x:Name="LinksTabItem" Header="Links" Selector.Selected="SessionsTabItem_Selected">
+                <Grid Margin="10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="320" MinWidth="200" />
+                        <ColumnDefinition Width="6" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <DockPanel Grid.Column="0">
+                        <WrapPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+                            <Button x:Name="CheckLinksButton" Padding="8,2" Margin="0,0,4,4" Click="CheckLinksButton_Click"
+                                ToolTip="Ask archive.org whether each link's item changed since your last snapshot, and check each folder still exists. A few bytes per link.">Check all for updates</Button>
+                            <Button x:Name="LinkOpenButton" Padding="8,2" Margin="0,0,4,4" Click="LinkOpenButton_Click"
+                                ToolTip="Put this link's URL and folder on the Sync tab.">Open in Sync tab</Button>
+                            <Button x:Name="LinkRelocateButton" Padding="8,2" Margin="0,0,4,4" Click="LinkRelocateButton_Click"
+                                ToolTip="You moved the downloaded files: point the link, its runs and its verifications at the new folder. No file is touched.">Relocate…</Button>
+                            <Button x:Name="LinkForgetButton" Padding="8,2" Margin="0,0,4,4" Click="LinkForgetButton_Click"
+                                ToolTip="Delete this link's snapshots and runs from history. Downloaded files are not touched.">Forget…</Button>
+                        </WrapPanel>
+                        <DockPanel x:Name="CheckAllPanel" DockPanel.Dock="Bottom" Margin="0,8,0,0" Visibility="Collapsed">
+                            <Button DockPanel.Dock="Right" Padding="8,1" Margin="6,0,0,0" Click="CheckAllCancelButton_Click">Cancel</Button>
+                            <StackPanel>
+                                <ProgressBar x:Name="CheckAllProgressBar" Height="12" Maximum="1000" />
+                                <TextBlock x:Name="CheckAllTextBlock" Foreground="Gray" TextTrimming="CharacterEllipsis" Margin="0,2,0,0" />
+                            </StackPanel>
+                        </DockPanel>
+                        <TextBlock DockPanel.Dock="Bottom" Margin="0,6,0,0" Foreground="Gray" TextWrapping="Wrap"
+                            Text="● up to date  ▲ changed on archive.org  ? not synced yet  ✖ folder or item missing" />
+                        <ListBox x:Name="LinksListBox" SelectionChanged="LinksListBox_SelectionChanged" HorizontalContentAlignment="Stretch"
+                            ScrollViewer.HorizontalScrollBarVisibility="Disabled" MouseDoubleClick="LinksListBox_MouseDoubleClick">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,3">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="20" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="{Binding Glyph}" Foreground="{Binding GlyphBrush}" FontWeight="Bold" />
+                                        <StackPanel Grid.Column="1">
+                                            <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{Binding Folder}" Foreground="Gray" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{Binding Status}" Foreground="Gray" TextWrapping="Wrap" FontSize="11" />
+                                        </StackPanel>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </DockPanel>
+                    <GridSplitter Grid.Column="1" Width="6" HorizontalAlignment="Stretch" Background="Transparent" />
+                    <DockPanel Grid.Column="2">
+                        <TextBlock x:Name="LinkHeaderTextBlock" DockPanel.Dock="Top" FontWeight="SemiBold" Margin="0,0,0,6" TextTrimming="CharacterEllipsis" />
+                        <TabControl x:Name="LinkTabs">
+                            <TabItem Header="Runs">
+                <DockPanel Margin="6">
                     <WrapPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
                         <Button x:Name="SessionOpenButton" Style="{StaticResource BarButton}" Margin="0" Click="SessionOpenButton_Click"
                             ToolTip="Load this session's file list and log without downloading.">Open</Button>
@@ -240,6 +293,129 @@
                         </ListView.View>
                     </ListView>
                 </DockPanel>
+                            </TabItem>
+                            <TabItem x:Name="SnapshotsTabItem" Header="Snapshots">
+                                <DockPanel Margin="6">
+                                    <WrapPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+                                        <Button x:Name="SnapshotComparePreviousButton" Padding="8,2" Margin="0,0,4,0" Click="SnapshotComparePreviousButton_Click"
+                                            ToolTip="Open the Diff tab with the snapshot before this one as A and this one as B.">Compare with previous</Button>
+                                        <Button x:Name="SnapshotCompareLiveButton" Padding="8,2" Margin="0,0,4,0" Click="SnapshotCompareLiveButton_Click"
+                                            ToolTip="Open the Diff tab with this snapshot as A and archive.org now as B.">Compare with archive.org now</Button>
+                                        <Button x:Name="SnapshotExportButton" Padding="8,2" Margin="0,0,4,0" Click="SnapshotExportButton_Click"
+                                            ToolTip="Save this snapshot's file list (name, size, MD5, SHA-1, CRC32, upload time) as CSV.">Export CSV…</Button>
+                                    </WrapPanel>
+                                    <TextBlock x:Name="SnapshotsInfoTextBlock" DockPanel.Dock="Top" Foreground="Gray" Margin="0,0,0,6" TextWrapping="Wrap" />
+                                    <ListView x:Name="SnapshotsListView" SelectionMode="Single" MouseDoubleClick="SnapshotComparePreviousButton_Click">
+                                        <ListView.View>
+                                            <GridView>
+                                                <GridViewColumn Header="#" DisplayMemberBinding="{Binding Number}" Width="36" />
+                                                <GridViewColumn Header="When" DisplayMemberBinding="{Binding When}" Width="120" />
+                                                <GridViewColumn Header="Source" DisplayMemberBinding="{Binding Source}" Width="110" />
+                                                <GridViewColumn Header="Files" DisplayMemberBinding="{Binding Files}" Width="50" />
+                                                <GridViewColumn Header="Size" DisplayMemberBinding="{Binding Size}" Width="80" />
+                                                <GridViewColumn Header="Δ vs previous" DisplayMemberBinding="{Binding Delta}" Width="320" />
+                                            </GridView>
+                                        </ListView.View>
+                                    </ListView>
+                                </DockPanel>
+                            </TabItem>
+                            <TabItem x:Name="DiffTabItem" Header="Diff">
+                                <DockPanel Margin="6">
+                                    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+                                        <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+                                            <TextBlock VerticalAlignment="Center" Margin="0,0,6,0">A</TextBlock>
+                                            <ComboBox x:Name="DiffAComboBox" Width="220" DisplayMemberPath="Label" />
+                                            <TextBlock VerticalAlignment="Center" Margin="8,0">→  B</TextBlock>
+                                            <ComboBox x:Name="DiffBComboBox" Width="220" DisplayMemberPath="Label" />
+                                            <Button x:Name="DiffCompareButton" Padding="12,1" Margin="8,0,0,0" Click="DiffCompareButton_Click">Compare</Button>
+                                        </StackPanel>
+                                    </DockPanel>
+                                    <DockPanel x:Name="DiffProgressPanel" DockPanel.Dock="Top" Margin="0,0,0,6" Visibility="Collapsed">
+                                        <Button DockPanel.Dock="Right" Padding="8,1" Margin="6,0,0,0" Click="DiffCancelButton_Click">Cancel</Button>
+                                        <ProgressBar x:Name="DiffProgressBar" DockPanel.Dock="Right" Width="200" Height="12" Maximum="1000" IsIndeterminate="True" />
+                                        <TextBlock x:Name="DiffProgressTextBlock" VerticalAlignment="Center" Foreground="Gray" TextTrimming="CharacterEllipsis" />
+                                    </DockPanel>
+                                    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                        <TextBlock VerticalAlignment="Center" Margin="0,0,6,0">Search:</TextBlock>
+                                        <TextBox x:Name="DiffSearchTextBox" Width="160" Padding="2" TextChanged="DiffFilter_Changed" />
+                                    </StackPanel>
+                                    <WrapPanel>
+                                        <CheckBox x:Name="DiffShowAdded" Margin="0,0,12,0" IsChecked="True" Click="DiffFilter_Changed">+ added</CheckBox>
+                                        <CheckBox x:Name="DiffShowRemoved" Margin="0,0,12,0" IsChecked="True" Click="DiffFilter_Changed">− removed</CheckBox>
+                                        <CheckBox x:Name="DiffShowRenamed" Margin="0,0,12,0" IsChecked="True" Click="DiffFilter_Changed">~ renamed</CheckBox>
+                                        <CheckBox x:Name="DiffShowMoved" Margin="0,0,12,0" IsChecked="True" Click="DiffFilter_Changed">⇄ moved</CheckBox>
+                                        <CheckBox x:Name="DiffShowChanged" Margin="0,0,12,0" IsChecked="True" Click="DiffFilter_Changed">* changed</CheckBox>
+                                        <CheckBox x:Name="DiffShowTouched" Margin="0,0,12,0" IsChecked="False" Click="DiffFilter_Changed">· touched</CheckBox>
+                                    </WrapPanel>
+                                    </DockPanel>
+                                    <WrapPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+                                        <Button x:Name="DiffHistoryButton" Padding="8,2" Margin="0,0,4,0" Click="DiffHistoryButton_Click"
+                                            ToolTip="Show every version of the selected file.">History of selected file</Button>
+                                        <Button x:Name="DiffExportButton" Padding="8,2" Margin="0,0,4,0" Click="DiffExportButton_Click">Export CSV…</Button>
+                                        <Button x:Name="DiffSyncButton" Padding="8,2" Margin="0,0,4,0" Click="DiffSyncButton_Click"
+                                            ToolTip="Open ⟳ Sync for this link to apply what changed since your last snapshot.">⟳ Sync this link…</Button>
+                                        <TextBlock x:Name="DiffSummaryTextBlock" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="Gray" />
+                                    </WrapPanel>
+                                    <DataGrid x:Name="DiffFoldersDataGrid" DockPanel.Dock="Top" Height="100" Margin="0,0,0,6" AutoGenerateColumns="False" IsReadOnly="True"
+                                        HeadersVisibility="Column" GridLinesVisibility="None" SelectionMode="Single" CanUserAddRows="False"
+                                        SelectionChanged="DiffFoldersDataGrid_SelectionChanged">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="Folder" Binding="{Binding FolderText}" Width="*" />
+                                            <DataGridTextColumn Header="Files" Binding="{Binding Files}" Width="55" ElementStyle="{StaticResource RightCell}" />
+                                            <DataGridTextColumn Header="+" Binding="{Binding Added}" Width="38" ElementStyle="{StaticResource RightCell}" />
+                                            <DataGridTextColumn Header="−" Binding="{Binding Removed}" Width="38" ElementStyle="{StaticResource RightCell}" />
+                                            <DataGridTextColumn Header="~" Binding="{Binding Renamed}" Width="38" ElementStyle="{StaticResource RightCell}" />
+                                            <DataGridTextColumn Header="⇄" Binding="{Binding Moved}" Width="38" ElementStyle="{StaticResource RightCell}" />
+                                            <DataGridTextColumn Header="*" Binding="{Binding Changed}" Width="38" ElementStyle="{StaticResource RightCell}" />
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                    <DataGrid x:Name="DiffRowsDataGrid" AutoGenerateColumns="False" IsReadOnly="True" HeadersVisibility="Column"
+                                        GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#FFE6E6E6" SelectionMode="Single" CanUserAddRows="False"
+                                        EnableRowVirtualization="True" VirtualizingPanel.IsVirtualizing="True" MouseDoubleClick="DiffHistoryButton_Click">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="Δ" Binding="{Binding Glyph}" Width="26" SortMemberPath="Kind" />
+                                            <DataGridTextColumn Header="Name" Binding="{Binding NameText}" Width="*" SortMemberPath="Name" />
+                                            <DataGridTextColumn Header="A" Binding="{Binding AText}" Width="160" />
+                                            <DataGridTextColumn Header="B" Binding="{Binding BText}" Width="160" />
+                                            <DataGridTextColumn Header="Local" Binding="{Binding LocalText}" Width="80" SortMemberPath="Local" />
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                </DockPanel>
+                            </TabItem>
+                            <TabItem x:Name="FileHistoryTabItem" Header="File history">
+                                <DockPanel Margin="6">
+                                    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+                                        <Button x:Name="FileHistoryShowButton" DockPanel.Dock="Right" Padding="12,1" Margin="6,0,0,0" Click="FileHistoryShowButton_Click" IsDefault="False">Show</Button>
+                                        <TextBlock DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,6,0">File:</TextBlock>
+                                        <ComboBox x:Name="FileHistoryComboBox" IsEditable="True" IsTextSearchEnabled="True"
+                                            ToolTip="Pick or type a file name as archive.org lists it, e.g. TeknoParrot Collection/Game.zip" />
+                                    </DockPanel>
+                                    <WrapPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+                                        <Button x:Name="FileHistoryDownloadButton" Padding="8,2" Margin="0,0,4,0" Click="FileHistoryDownloadButton_Click"
+                                            ToolTip="Open the selected archive.org kept copy (history/files/…) in your browser to download it.">Download kept copy…</Button>
+                                        <Button Padding="8,2" Margin="0,0,4,0" Click="FileHistoryCopyButton_Click">Copy</Button>
+                                        <TextBlock x:Name="FileHistoryInfoTextBlock" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="Gray" TextWrapping="Wrap" />
+                                    </WrapPanel>
+                                    <ListView x:Name="FileHistoryListView" SelectionMode="Single">
+                                        <ListView.View>
+                                            <GridView>
+                                                <GridViewColumn Header="When" DisplayMemberBinding="{Binding When}" Width="110" />
+                                                <GridViewColumn Header="Source" DisplayMemberBinding="{Binding Source}" Width="200" />
+                                                <GridViewColumn Header="Size" DisplayMemberBinding="{Binding SizeText}" Width="70" />
+                                                <GridViewColumn Header="Local" DisplayMemberBinding="{Binding Local}" Width="95" />
+                                                <GridViewColumn Header="Runs" DisplayMemberBinding="{Binding Note}" Width="200" />
+                                                <GridViewColumn Header="Uploaded" DisplayMemberBinding="{Binding Uploaded}" Width="110" />
+                                                <GridViewColumn Header="MD5" DisplayMemberBinding="{Binding Md5}" Width="250" />
+                                                <GridViewColumn Header="SHA-1" DisplayMemberBinding="{Binding Sha1}" Width="300" />
+                                            </GridView>
+                                        </ListView.View>
+                                    </ListView>
+                                </DockPanel>
+                            </TabItem>
+                        </TabControl>
+                    </DockPanel>
+                </Grid>
             </TabItem>
             <TabItem Header="Log" Selector.Selected="LogTabItem_Selected">
                 <DockPanel Margin="10">

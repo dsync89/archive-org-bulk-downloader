@@ -142,6 +142,7 @@ namespace ArchiveOrgCollectionSync
                 {
                     var lastSync = this.link.LastChecked;
                     this.link.LastChecked = DateTime.Now;
+                    this.link.LastCheck = new LinkCheck { Checked = DateTime.Now, RemoteUpdated = this.itemLastUpdated };
                     LinkStore.Save(this.link);
                     this.UpToDateTextBlock.Text = $"● Up to date.\n\narchive.org last changed {this.collection} on {SyncWindow.When(this.itemLastUpdated)}, before your last Sync"
                         + (lastSync is { } at ? $" ({at:yyyy-MM-dd HH:mm})" : string.Empty)
@@ -526,6 +527,7 @@ namespace ArchiveOrgCollectionSync
                 LinkStore.AddSnapshot(this.link, this.live, "sync", DateTime.Now);
                 this.link.ItemLastUpdated = this.itemLastUpdated ?? this.link.ItemLastUpdated;
                 this.link.LastChecked = DateTime.Now;
+                this.link.LastCheck = new LinkCheck { Checked = DateTime.Now, RemoteUpdated = this.itemLastUpdated };
                 this.link.Url = this.url;
                 LinkStore.Save(this.link);
             }

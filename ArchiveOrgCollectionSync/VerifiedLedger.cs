@@ -64,6 +64,34 @@ namespace ArchiveOrgCollectionSync
 
         public int Count => this.Files.Count;
 
+        /// <summary>Moves a folder's ledger to another folder (after its files were moved there). Entries already there win.</summary>
+        public static void Move(string oldFolder, string newFolder)
+        {
+            var from = VerifiedLedger.Load(oldFolder);
+
+            if (from.Count == 0)
+            {
+                return;
+            }
+
+            var to = VerifiedLedger.Load(newFolder);
+
+            foreach (var (name, entry) in from.Files)
+            {
+                to.Files.TryAdd(name, entry);
+            }
+
+            to.Save();
+
+            try
+            {
+                System.IO.File.Delete(from.path);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+            }
+        }
+
         public static VerifiedLedger Load(string folder)
         {
             string full = Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar);

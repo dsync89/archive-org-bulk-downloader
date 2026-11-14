@@ -23,6 +23,9 @@ namespace ArchiveOrgCollectionSync
                 : value.ToString(value >= 100 ? "0" : "0.0", CultureInfo.CurrentCulture) + " " + Format.Units[unit];
         }
 
+        /// <summary>Quotes a CSV field when it holds a comma, quote or line break.</summary>
+        public static string Csv(string value) => value.IndexOfAny(new[] { ',', '"', '\r', '\n' }) >= 0 ? "\"" + value.Replace("\"", "\"\"") + "\"" : value;
+
         public static string Plural(int count, string word) => $"{count} {word}{(count == 1 ? string.Empty : "s")}";
 
         public static string Speed(double bytesPerSecond)

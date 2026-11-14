@@ -47,7 +47,15 @@ Paste a collection URL, pick a folder and press Start.
   - optionally, files that are no longer in the collection are deleted.
 - **TeraCopy-style progress.** Each file shows status, size, a progress bar, speed and ETA, with filters (Active /
   Queued / Done / Skipped / Failed) and search. Overall speed and ETA show in the bottom bar and on the taskbar.
-- **Session history.** Resume, retry failed files, re-run or export to CSV from any past session.
+- **Links tab: every collection you sync, with its history.**
+  - **Check all for updates** asks archive.org about every link at once and flags it: `●` up to date, `▲` changed
+    since your last run or snapshot, `?` not synced yet, `✖` the folder or item is gone.
+  - **Runs** lists past sessions with Resume, Retry Failed, Re-run and Export CSV.
+  - **Snapshots** lists every saved file list with what changed against the one before.
+  - **Diff** compares any two snapshots, or a snapshot with archive.org now.
+  - **File history** lists every version of one file: size, MD5, SHA-1, upload date, which run fetched it, whether it
+    is the copy on disk, and the copies archive.org kept of replaced versions.
+  - **Relocate** points a link at the folder you moved its files to; **Forget** deletes its history.
 - **Detailed log** with levels, search, copy and save, plus a log file per session.
 - **Polite to archive.org.** It retries with backoff and honours `Retry-After` on HTTP 429/503.
 - **"Originals only"** skips derivative files (thumbnails, torrents, metadata) that archive.org generates.
@@ -80,6 +88,9 @@ Paste a collection URL, pick a folder and press Start.
 | Verify | MD5 checksum | **Size only** is much faster when re-checking a big existing folder. |
 | Originals only | on | Skip archive.org-generated derivatives (thumbnails, torrents, `_meta.xml`…). |
 | Delete files not in the collection | off | Mirror mode: delete extra files under the destination (in-progress `.part` files are kept). |
+
+5. On the **Links** tab, press **Check all for updates** now and then to see which of your collections changed on
+   archive.org.
 
 ## FAQ
 
@@ -143,6 +154,23 @@ You don't need to re-hash your existing downloads first. The first Sync of a fol
 version takes its baseline from the folder's `<identifier>_files.xml` and your old sessions. A file that kept the size
 it had when a session verified it, and wasn't written after that session ended, counts as verified.
 
+### How do I see every version of one file?
+
+Right-click it in the file list and choose **History of This File**. Or pick it on **Links → File history**, or
+double-click a row in **Links → Diff**. One row per distinct version:
+- **When / Source:** the snapshots it appeared in, with consecutive identical ones folded into one row.
+- **Size, MD5, SHA-1** and archive.org's **upload date**.
+- **Runs:** which runs downloaded or verified it.
+- **Local:** whether it's the copy on your disk, judged from the verified-files ledger without hashing.
+- archive.org's own **kept copies** (`history/files/<name>.~N~`) of versions an uploader replaced. Select one and click
+  **Download kept copy…** to fetch it in your browser.
+
+### I moved my downloads to another drive. Do I lose the history?
+
+No. On **Links**, select the link, click **Relocate…** and pick the new folder. The link, its snapshots, its runs and
+its verified-files ledger all follow, so nothing has to be re-hashed. Check all for updates marks links whose folder is
+gone with `✖`.
+
 ### How do I download only some files from an archive.org collection?
 
 1. Press **Scan**. The whole list appears and nothing downloads yet.
@@ -192,7 +220,7 @@ No. It downloads archive.org **items and collections** (`/details/` and `/downlo
 | `%LocalAppData%\ArchiveOrgCollectionSync\sessions\<yyyyMMdd_HHmmss>_<identifier>.json` | Session history (per-file status) |
 | `%LocalAppData%\ArchiveOrgCollectionSync\sessions\<…>.log` | Session log (tab-separated) |
 | `%LocalAppData%\ArchiveOrgCollectionSync\verified\<folder hash>.json` | Verified-files ledger per destination folder (skips re-hashing): size, MD5, SHA-1, CRC32, local length and write time, and where the proof came from |
-| `%LocalAppData%\ArchiveOrgCollectionSync\links\<identifier>_<folder hash>\link.json` | A download link: URL, folder, last Sync and its snapshot list |
+| `%LocalAppData%\ArchiveOrgCollectionSync\links\<identifier>_<folder hash>\link.json` | A download link: URL, folder, last Sync, last "Check all" result and its snapshot list |
 | `%LocalAppData%\ArchiveOrgCollectionSync\links\<…>\snapshots\<yyyyMMdd_HHmmss>.xml.gz` | One saved copy of the item's file list (name, size, MD5, SHA-1, CRC32, upload time) |
 | `<destination>\_removed\<date>\` | Files Sync moved aside (replaced or removed on archive.org), plus `undo.json` |
 
@@ -255,6 +283,25 @@ when the list differs from the latest one.
   - A changed or removed file is moved to `_removed\<date>\`.
   - A copy that was never verified is left for the download step to check; the confirm step warns about it.
   - Missing files that weren't ticked last time stay missing.
+
+### Links tab
+
+- **Link list:** built from the saved links plus every collection and folder pair found in session history.
+- **Check all for updates:** asks `metadata/<id>/item_last_updated` for up to 4 links at a time, with 20-second caps,
+  and checks each folder exists. The result is saved in `link.json`.
+  - A synced link is `▲` when the item changed after the date seen at its last Sync (or, if only Start ran, after its
+    latest snapshot).
+  - A link that was never synced is `▲` when the item changed after its last run ended.
+- **Diff tab:** uses the same `SnapshotDiff` and Local column as Sync, but never touches the disk beyond one stat per
+  row.
+- **File history (`LinkHistory.Build`, unit-tested):**
+  - archive.org's kept copies come first;
+  - then one row per run of identical content across the snapshots, newest last;
+  - each row is annotated with the runs that downloaded or verified that MD5 and with the ledger's view of the local
+    copy.
+- **Relocate:** moves `links\<id>` to the new folder's id, rewrites the sessions' `Folder` and merges the verified
+  ledger into the new folder's. It never touches files.
+- **Forget:** deletes the link's snapshots and runs, but keeps the ledger and the downloaded files.
 
 ### UI
 
