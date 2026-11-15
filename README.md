@@ -10,6 +10,8 @@
 - **resume** after pause, crash or reboot;
 - **MD5 checksum verification**;
 - **Sync**, which shows what the uploader added, removed, renamed or replaced since your last download, and applies it;
+- **re-zip detection**: a file that only got re-zipped (new checksum, same files inside) is proven unchanged and not
+  downloaded again;
 - a live, TeraCopy-style file list with speed and ETA.
 
 Paste a collection URL, pick a folder and press Start.
@@ -20,6 +22,42 @@ Paste a collection URL, pick a folder and press Start.
 
 > Forked from [Archive.org Collection Sync](https://github.com/jasonunbrokensoftware/ArchiveOrgCollectionSync) by
 > Jason / Unbroken Software, LLC. See [Credits](#credits).
+
+## Why this exists: archive.org items change under you
+
+Big archive.org collections, such as ROM sets, software libraries and game packs, are living things. Uploaders keep
+replacing files with no changelog: same file name, new checksum. Sometimes a set really got new content. Often the
+uploader only rebuilt the zips with a newer tool, so every checksum changes but nothing inside does.
+
+Most archive.org downloaders handle this in one of two ways:
+- **One-shot:** download once and you never learn what changed afterwards.
+- **Blind mirror:** anything with a new checksum is downloaded again, and the old copy is overwritten.
+
+We're not aware of one that tells you *what* changed and *whether it matters*. So you re-download hundreds of GB, or you
+miss the real updates.
+
+**A real example (tp-roms_0, November 2026).** The uploader re-uploaded 235 zips in one day, all with new MD5s:
+
+| | A checksum-only sync | This app's Sync |
+|---|---|---|
+| What you see | "235 files changed" | 225 **≡ re-zipped only**: the same ROMs, proven without downloading. 10 **≠ really changed**: clone sets added, BIOS ROMs dropped |
+| Downloaded | 30.6 GB | about 2.3 GB |
+| Your old copies | overwritten | the 10 real old versions are kept in `_removed\<date>\`, with a list of the ROMs that changed |
+
+How it does that:
+- **It remembers every link.** Each collection + folder pair keeps snapshots of archive.org's file list, so the app
+  knows what you had and when.
+- **It shows a diff before touching anything.** It lists files added, removed, renamed, moved and changed. For each one
+  it shows the old and new checksum and which version is on your disk.
+- **It syncs only what differs.**
+  - Unchanged files are skipped without re-hashing, using a ledger of earlier verifications.
+  - Renamed files are renamed on disk instead of downloaded again.
+  - Changes with only a new upload date are ignored.
+- **It doesn't spend bandwidth on re-zips.** It reads archive.org's zip index (a few KB per file) and rebuilds your
+  copy's inner zips from your own ROMs. When the result is byte-identical to archive.org's, the file is proven
+  unchanged and kept. Zip dates, headers and folder entries changing is not a change.
+- **It never hides a real change.** Anything that can't be proven the same is replaced as usual. Replaced files go to
+  `_removed\<date>\` with an undo list, and are never deleted.
 
 ## Features
 
@@ -40,9 +78,19 @@ Paste a collection URL, pick a folder and press Start.
   **+ added, − removed, ~ renamed, ⇄ moved or \* changed** (new checksum). For each file it also shows whether the copy
   on disk matches the old version, the new one or neither. Then it applies the changes you tick:
   - renamed files are renamed on disk instead of downloaded again;
-  - replaced and removed files move to `_removed\<date>\` (never deleted), with an `undo.json`.
+  - replaced and removed files move to `_removed\<date>\` (never deleted), with an `undo.json`;
+  - after the download, `changes.txt` lists what changed inside each replaced zip, ROM by ROM.
+- **Re-zips aren't re-downloaded ("Keep re-zipped files").** When a changed zip holds exactly the same files as your
+  copy, Sync proves it without downloading:
+  - it reads archive.org's zip index with HTTP range requests;
+  - it rebuilds each inner zip TorrentZip-style from your ROMs and compares CRC32 and size.
+
+  Proven files show **≡ B (repack)**, stay unticked and keep your copy. Start and Verify All then treat them as up to
+  date. **Tick ≡ anyway** fetches archive.org's exact bytes instead. See the
+  [FAQ](#why-does-sync-leave-some-changed-files-unticked--re-zipped-only).
 - **Sync / mirror mode:**
-  - re-running skips files that are already correct;
+  - re-running skips files that are already correct, in a quick check before any download starts, so the queue and
+    ETA count only real downloads;
   - files with the wrong size or checksum download again;
   - optionally, files that are no longer in the collection are deleted.
 - **TeraCopy-style progress.** Each file shows status, size, a progress bar, speed and ETA, with filters (Active /
