@@ -88,6 +88,7 @@ Paste a collection URL, pick a folder and press Start.
 | Verify | MD5 checksum | **Size only** is much faster when re-checking a big existing folder. |
 | Originals only | on | Skip archive.org-generated derivatives (thumbnails, torrents, `_meta.xml`…). |
 | Delete files not in the collection | off | Mirror mode: delete extra files under the destination (in-progress `.part` files are kept). |
+| Keep re-zipped files | on | Sync: when archive.org lists a changed zip that provably holds the same files as yours, keep your copy instead of downloading it again. Off = always replace changed files. |
 
 5. On the **Links** tab, press **Check all for updates** now and then to see which of your collections changed on
    archive.org.
@@ -153,6 +154,33 @@ new checksum. Sync compares the file list from your last download with archive.o
 You don't need to re-hash your existing downloads first. The first Sync of a folder you downloaded with an earlier
 version takes its baseline from the folder's `<identifier>_files.xml` and your old sessions. A file that kept the size
 it had when a session verified it, and wasn't written after that session ended, counts as verified.
+
+### Why does Sync leave some changed files unticked (≡ re-zipped only)?
+
+Because the files inside them are the same as yours: archive.org lists a new MD5 only because the zip was rebuilt.
+ROM collections are often re-packed in bulk when the uploader updates their tools (RomVault, TorrentZip) or DAT. For
+example, tp-roms_0 changed 235 zips in one day in November 2026, and 225 of them held exactly the same ROMs.
+
+How Sync proves it, without downloading:
+- It reads archive.org's index of the new zip with a few range requests (about 64 KB per file). That index lists the
+  CRC32 and size of every file and every inner romset zip.
+- Files compared directly (not inner zips) must have the same names, CRCs and sizes.
+- Each inner zip is rebuilt in memory from your ROMs the TorrentZip way: ROMs stored, folder entries dropped, fixed
+  headers, date 1996-12-24 23:32. The rebuilt zip's CRC32 and size must equal archive.org's exactly. Every ROM's CRC is
+  checked on the way, so a damaged copy is never "proven".
+- Your file is only read. Its MD5 stays its own: the ledger records that it is equivalent to archive.org's MD5 X, so
+  Start skips it and **Verify All** checks it against your MD5.
+- When archive.org changes the file again, or your copy changes, the proof expires and the file is checked again.
+
+**Only a positive proof keeps a file.** Anything that can't be proven is treated as a normal change and replaced:
+another compression method, encryption, a non-zip file, a damaged zip, a failed request. **Tick ≡ anyway** fetches
+archive.org's exact bytes, and turning off **Keep re-zipped files** makes every Sync strict.
+
+For a zip that really changed, the log and `_removed\<date>\changes.txt` list what changed inside after the
+download, for example `+5 cybsled.zip/cybsleda/…; −2 cybsled.zip/c67.bin`.
+
+Why the MD5 can't simply be made to match: the outer zip is compressed by the uploader's tool, and that output can't be
+reproduced byte for byte. The proof covers what matters instead, which is the files inside.
 
 ### How do I see every version of one file?
 
@@ -268,8 +296,9 @@ everything ticked.
 A **link** is one identifier synced into one folder (`LinkStore.cs`). A **snapshot** is the item's file list as it
 was at a Sync, or at a Start (which acts on the list). Scan only compares and never saves one. A snapshot is only saved
 when the list differs from the latest one.
-- **First use:** snapshot #0 is the `<identifier>_files.xml` already in the folder. Failing that, it is the newest
-  session's list, MD5 only.
+- **First use:** snapshot #0 is the `<identifier>_files.xml` already in the folder, unless a later run fetched a
+  newer list (a session started more than 10 minutes after the file was written). Otherwise it is the newest session's
+  list, MD5 only.
 - **Diff (`SnapshotDiff.cs`, unit-tested):** archive.org's `history/` copies and the item's own `_files.xml` are left
   out, and so are derivatives when Originals only is on. Matching runs in this order:
   1. Same name: **changed** if the size or MD5 differs, **touched** if only `mtime` moved.
@@ -283,6 +312,18 @@ when the list differs from the latest one.
   - A changed or removed file is moved to `_removed\<date>\`.
   - A copy that was never verified is left for the download step to check; the confirm step warns about it.
   - Missing files that weren't ticked last time stay missing.
+- **Repack proof (`RepackProof.cs`, `ZipIndex.cs`, unit-tested):** for a changed `.zip` you have, Sync reads archive.org's
+  central directory with HTTP range requests (`HttpRangeStream.cs`). It then compares that directory with your copy:
+  - plain entries are compared by CRC32 and size;
+  - each inner zip is rebuilt canonically from your ROMs, stored or deflated (stored, no folder entries, version 10,
+    no attributes, 1996-12-24 23:32), in found and sorted order. The rebuild's CRC is built from per-entry CRCs with
+    `Crc32.Combine`, so nothing is buffered.
+
+  A match on CRC and size makes the row **≡**: it is kept unticked, and the ledger stores `EquivalentMd5`. Any
+  difference gives **≠**, and anything unreadable gives **?**; both are replaced as before. After a download,
+  `ListContents` and `Describe` log the per-ROM difference against the copy in `_removed\`.
+- **Run order:** before any download, a stat-only pass skips files the ledger vouches for. Files already on disk that
+  need a check go next, then downloads, so counts and the ETA reflect the real work.
 
 ### Links tab
 
