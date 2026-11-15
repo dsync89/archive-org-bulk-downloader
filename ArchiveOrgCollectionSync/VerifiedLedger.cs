@@ -34,6 +34,29 @@ namespace ArchiveOrgCollectionSync
         /// Hash button) or "session &lt;id&gt;" (taken over from an earlier session by Sync's baseline).
         /// </summary>
         public string Source { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Gets or sets archive.org's MD5 of a version proven to hold exactly the same files as this one (a re-zip): your
+        /// copy keeps its own <see cref="Md5"/> but counts as up to date while archive.org lists this MD5.
+        /// </summary>
+        public string EquivalentMd5 { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the size archive.org lists for <see cref="EquivalentMd5"/>.</summary>
+        public long EquivalentSize { get; set; }
+
+        /// <summary>Gets or sets why the copy counts as equivalent (the repack proof's note).</summary>
+        public string ProofNote { get; set; } = string.Empty;
+
+        /// <summary>Returns true when this entry is the listed version, or was proven to hold the same files.</summary>
+        public bool Covers(string md5, long size, bool sizeKnown = true)
+        {
+            bool Same(string m, long s) => m.Length > 0 && m.Equals(md5, StringComparison.OrdinalIgnoreCase) && (!sizeKnown || s == size);
+
+            return Same(this.Md5, this.Size) || Same(this.EquivalentMd5, this.EquivalentSize);
+        }
+
+        /// <summary>Gets a value indicating whether this entry counts as up to date only through a repack proof.</summary>
+        public bool IsRepackFor(string md5) => this.EquivalentMd5.Length > 0 && this.EquivalentMd5.Equals(md5, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -121,8 +144,7 @@ namespace ArchiveOrgCollectionSync
         public bool IsVerified(FileItem item, string localPath, bool requireMd5)
         {
             if (!this.Files.TryGetValue(item.Name, out var entry)
-                || entry.Size != item.Size
-                || !string.Equals(entry.Md5, item.Md5, StringComparison.OrdinalIgnoreCase)
+                || !(entry.Covers(item.Md5, item.Size) || (item.Md5.Length == 0 && entry.Md5.Length == 0 && entry.Size == item.Size))
                 || (requireMd5 && item.Md5.Length > 0 && !entry.Md5Verified))
             {
                 return false;
@@ -186,6 +208,12 @@ namespace ArchiveOrgCollectionSync
             {
                 this.Save();
             }
+        }
+
+        /// <summary>Gets the entry when it vouches for <paramref name="item"/> only through a repack proof (else null).</summary>
+        public LedgerEntry? RepackEntry(FileItem item)
+        {
+            return this.Files.TryGetValue(item.Name, out var entry) && entry.IsRepackFor(item.Md5) && entry.EquivalentSize == item.Size ? entry : null;
         }
 
         public void Remove(string name)
