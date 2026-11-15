@@ -35,6 +35,12 @@ namespace ArchiveOrgCollectionSync
         public bool OriginalsOnly { get; set; } = true;
 
         public bool DeleteExtraFiles { get; set; }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether Sync proves re-zipped files (same files inside, new md5) and keeps
+        /// your copy instead of downloading them again. Off = strict: every changed file is replaced.
+        /// </summary>
+        public bool KeepRepacks { get; set; } = true;
     }
 
     /// <summary>
@@ -87,6 +93,12 @@ namespace ArchiveOrgCollectionSync
             string url = $"https://archive.org/metadata/{Uri.EscapeDataString(collection)}/item_last_updated";
             using var document = JsonDocument.Parse(await DownloadEngine.Http.GetStringAsync(url, ct));
             return document.RootElement.TryGetProperty("result", out var result) && result.TryGetInt64(out long value) ? value : null;
+        }
+
+        /// <summary>Opens a file of the item for range reads (e.g. a zip's index), without downloading it.</summary>
+        public static HttpRangeStream OpenRemote(string collection, string name, CancellationToken ct)
+        {
+            return HttpRangeStream.Open(DownloadEngine.Http, DownloadEngine.FileUrl(collection, name), ct);
         }
 
         /// <summary>MD5 of a local file as lowercase hex (Sync's Hash button).</summary>
@@ -164,7 +176,32 @@ namespace ArchiveOrgCollectionSync
         {
             var queue = Channel.CreateUnbounded<FileItem>();
 
-            foreach (var item in items)
+            // Fast pass first (stat + ledger, no hashing): files verified earlier are done at once instead of waiting
+            // behind downloads, so the counts and the ETA reflect only the real work. Files already on disk that still
+            // need a check go before the downloads.
+            var ordered = await Task.Run(
+                () =>
+                {
+                    var onDisk = new List<FileItem>();
+                    var missing = new List<FileItem>();
+
+                    foreach (var item in items)
+                    {
+                        ct.ThrowIfCancellationRequested();
+
+                        if (!item.IsChecked || this.TrySkipVerified(collection, folder, item))
+                        {
+                            continue;
+                        }
+
+                        (System.IO.File.Exists(this.Destination(folder, item)) ? onDisk : missing).Add(item);
+                    }
+
+                    return onDisk.Concat(missing).ToList();
+                },
+                ct);
+
+            foreach (var item in ordered)
             {
                 queue.Writer.TryWrite(item);
             }
@@ -267,15 +304,32 @@ namespace ArchiveOrgCollectionSync
                         return;
                     }
 
-                    if (!this.reverifyAll && this.ledger?.IsVerified(item, destination, this.UseMd5) == true)
+                    if (this.TrySkipVerified(collection, folder, item))
                     {
-                        item.SetBytes(item.Size);
-                        item.SetState(FileStatus.Skipped, "skipped (verified earlier)");
-                        this.log.Write(LogLevel.Debug, "Verified in an earlier run and unchanged. Skipping without re-checking.", item.Name);
                         return;
                     }
 
-                    if (await this.MatchesAsync(destination, item, ct))
+                    // A re-zip proven to hold the same files: check it against its own MD5, not archive.org's.
+                    if (this.ledger?.RepackEntry(item) is { } repack)
+                    {
+                        var info = new FileInfo(destination);
+                        bool intact = info.Length == repack.LocalLength
+                            && (!this.UseMd5 || await this.Md5MatchesAsync(destination, repack.Md5, ct));
+
+                        if (intact)
+                        {
+                            repack.LocalWriteUtc = info.LastWriteTimeUtc;
+                            repack.VerifiedUtc = DateTime.UtcNow;
+                            item.SetBytes(item.Size);
+                            item.SetState(FileStatus.Skipped, "skipped (repack, same files)");
+                            this.log.Write(LogLevel.Debug, $"Kept: archive.org re-zipped this file, but your copy holds {repack.ProofNote}.", item.Name);
+                            return;
+                        }
+
+                        this.ledger.Remove(item.Name);
+                        this.log.Write(LogLevel.Warn, "Your copy no longer matches the one proven equivalent to archive.org's. Re-downloading.", item.Name);
+                    }
+                    else if (await this.MatchesAsync(destination, item, ct))
                     {
                         bool hashed = this.UseMd5 && item.Md5.Length > 0;
                         this.ledger?.Record(item, destination, hashed, "check");
@@ -284,9 +338,11 @@ namespace ArchiveOrgCollectionSync
                         this.log.Write(LogLevel.Debug, hashed ? "Already exists with the correct checksum. Skipping." : "Already exists with the correct size. Skipping.", item.Name);
                         return;
                     }
-
-                    this.ledger?.Remove(item.Name);
-                    this.log.Write(LogLevel.Warn, "Existing file has an incorrect size or checksum. Re-downloading.", item.Name);
+                    else
+                    {
+                        this.ledger?.Remove(item.Name);
+                        this.log.Write(LogLevel.Warn, "Existing file has an incorrect size or checksum. Re-downloading.", item.Name);
+                    }
                 }
 
                 for (int attempt = 1; ; attempt++)
@@ -357,6 +413,31 @@ namespace ArchiveOrgCollectionSync
             {
                 item.SetConnections(0);
             }
+        }
+
+        private string Destination(string folder, FileItem item) => Path.GetFullPath(Path.Combine(folder, item.Name.Replace('/', Path.DirectorySeparatorChar)));
+
+        /// <summary>Marks the item skipped when the ledger vouches for the file on disk (stat only, no hashing).</summary>
+        private bool TrySkipVerified(string collection, string folder, FileItem item)
+        {
+            if (this.reverifyAll || this.ledger == null || item.Name.Equals($"{collection}_files.xml", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            string destination = this.Destination(folder, item);
+
+            if (!destination.StartsWith(Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                || !this.ledger.IsVerified(item, destination, this.UseMd5))
+            {
+                return false;
+            }
+
+            bool repack = this.ledger.RepackEntry(item) != null;
+            item.SetBytes(item.Size);
+            item.SetState(FileStatus.Skipped, repack ? "skipped (repack, same files)" : "skipped (verified earlier)");
+            this.log.Write(LogLevel.Debug, repack ? "Kept: proven to hold the same files as archive.org's re-zipped version, and unchanged." : "Verified in an earlier run and unchanged. Skipping without re-checking.", item.Name);
+            return true;
         }
 
         private async Task<bool> MatchesAsync(string path, FileItem item, CancellationToken ct)
