@@ -113,7 +113,7 @@
                 </DataGrid>
                 <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,4">
                     <TextBlock VerticalAlignment="Center" Margin="0,0,6,0">Tick:</TextBlock>
-                    <Button Padding="8,1" Margin="0,0,4,0" Click="TickAllButton_Click" ToolTip="Tick every visible row that would change something.">All</Button>
+                    <Button Padding="8,1" Margin="0,0,4,0" Click="TickAllButton_Click" ToolTip="Tick every visible row that would change something, except ≡ re-zips (they hold the same files; use Tick ≡ anyway for those).">All</Button>
                     <Button Padding="8,1" Margin="0,0,4,0" Click="TickNoneButton_Click" ToolTip="Untick every visible row: those files are left exactly as they are.">None</Button>
                     <Button x:Name="TickRepacksButton" Padding="8,1" Margin="0,0,4,0" Click="TickRepacksButton_Click" Visibility="Collapsed"
                         ToolTip="Replace re-zipped files anyway, to have archive.org's exact bytes (same files inside, so this only costs bandwidth).">Tick ≡ anyway</Button>

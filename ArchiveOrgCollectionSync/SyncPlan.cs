@@ -471,6 +471,18 @@ namespace ArchiveOrgCollectionSync
         }
 
         /// <summary>
+        /// The "All" button: ticks every row that would change something, except proven re-zips. Those hold the same
+        /// files as yours and are only replaced on purpose ("Tick ≡ anyway").
+        /// </summary>
+        public static void TickAll(IEnumerable<SyncRow> rows)
+        {
+            foreach (var row in rows)
+            {
+                row.IsChecked = row.IsActionable && !row.Repack;
+            }
+        }
+
+        /// <summary>
         /// Gets the rows worth a repack proof: a changed zip you have on disk in some other version. With
         /// <paramref name="keepRepacks"/> off (strict), none.
         /// </summary>
