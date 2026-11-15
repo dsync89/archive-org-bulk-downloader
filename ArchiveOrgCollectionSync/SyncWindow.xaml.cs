@@ -526,10 +526,7 @@ namespace ArchiveOrgCollectionSync
 
         private void TickAllButton_Click(object sender, RoutedEventArgs e)
         {
-            foreach (SyncRow row in this.rowsView)
-            {
-                row.IsChecked = row.IsActionable;
-            }
+            SyncPlan.TickAll(this.rowsView.Cast<SyncRow>());
         }
 
         private void TickRepacksButton_Click(object sender, RoutedEventArgs e)

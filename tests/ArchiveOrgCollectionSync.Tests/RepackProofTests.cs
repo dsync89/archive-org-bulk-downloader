@@ -210,6 +210,14 @@ namespace ArchiveOrgCollectionSync.Tests
             Assert.StartsWith("keep yours", row.ActionText);
             Assert.Empty(SyncPlan.ProofCandidates(rows, keepRepacks: true));
 
+            // "All" never ticks a proven re-zip; only an explicit tick replaces it.
+            SyncPlan.TickAll(rows);
+            Assert.False(row.IsChecked);
+            row.IsChecked = true;
+            Assert.Equal(SyncAction.Replace, row.Action);
+            SyncPlan.TickAll(rows);
+            Assert.False(row.IsChecked);
+
             // Start skips it as verified; your own MD5 is kept for Verify All.
             var item = new FileItem(b);
             Assert.True(ledger.IsVerified(item, path, requireMd5: true));
