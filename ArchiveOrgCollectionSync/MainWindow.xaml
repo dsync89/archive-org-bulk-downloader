@@ -91,6 +91,8 @@
                             ToolTip="Skip files archive.org derived itself (thumbnails, torrents, _meta.xml…)." Content="Originals only" />
                         <CheckBox x:Name="DeleteFilesCheckBox" VerticalAlignment="Center" Content="Delete files not in the collection"
                             ToolTip="Delete files in the destination folder that don't exist in the Archive.org collection." />
+                        <CheckBox x:Name="KeepRepacksCheckBox" VerticalAlignment="Center" Margin="18,0,0,0" IsChecked="True" Content="Keep re-zipped files"
+                            ToolTip="Sync: when archive.org re-zips a file (new md5) but every file inside is provably the same as yours, keep your copy instead of downloading it again. Untick to always replace changed files." />
                     </WrapPanel>
                     <Border x:Name="ChangeBanner" DockPanel.Dock="Top" Margin="0,10,0,0" Padding="10,6" Visibility="Collapsed"
                         Background="#FFFFF4E0" BorderBrush="#FFE8B04A" BorderThickness="1">

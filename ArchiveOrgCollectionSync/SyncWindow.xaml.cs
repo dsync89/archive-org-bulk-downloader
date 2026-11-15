@@ -66,6 +66,7 @@ namespace ArchiveOrgCollectionSync
         private long? itemLastUpdated;
         private BaselineResult? baseline;
         private string? folderFilter;
+        private CancellationTokenSource? skipStage;
         private bool busy;
         private bool finished;
 
@@ -182,9 +183,12 @@ namespace ArchiveOrgCollectionSync
                 var judged = await Task.Run(() => SyncPlan.Classify(this.folder, this.ledger, newRows, this.Token));
                 SyncPlan.ApplyClassification(newRows, judged);
 
+                // 6. Changed zips you have: look inside, keep the ones archive.org only re-zipped.
+                await this.ProveAsync(newRows);
+
                 foreach (var row in newRows)
                 {
-                    row.IsChecked = row.IsActionable && (row.Wanted || row.Local != LocalState.Missing);
+                    row.IsChecked = row.IsActionable && !row.Repack && (row.Wanted || row.Local != LocalState.Missing);
                     row.PropertyChanged += this.Row_PropertyChanged;
                     this.rows.Add(row);
                 }
@@ -209,6 +213,91 @@ namespace ArchiveOrgCollectionSync
             }
         }
 
+        /// <summary>
+        /// Reads archive.org's index of every changed zip you have (a few KB each) and compares it with your copy; rows
+        /// whose files are provably the same become "≡ B (repack)" and are kept. Skippable; anything unproven stays a
+        /// normal change.
+        /// </summary>
+        private async Task ProveAsync(List<SyncRow> all)
+        {
+            var candidates = SyncPlan.ProofCandidates(all, this.options.KeepRepacks);
+
+            if (candidates.Count == 0 || this.ledger == null)
+            {
+                return;
+            }
+
+            var ledger = this.ledger;
+            long total = candidates.Sum(r => new FileInfo(SyncPlan.LocalPath(this.folder, r.Entry.OldName ?? r.Name)) is { Exists: true } info ? info.Length : 0);
+            long read = 0;
+            int done = 0;
+            var results = new ProofResult?[candidates.Count];
+            var stage = this.Begin("Look inside changed zips", $"0 / {candidates.Count}");
+            using var skip = CancellationTokenSource.CreateLinkedTokenSource(this.Token);
+            this.skipStage = skip;
+            this.SkipButton.Visibility = Visibility.Visible;
+            this.StageProgressBar.IsIndeterminate = false;
+            string collection = this.collection;
+            string folder = this.folder;
+
+            var work = Task.Run(() => Parallel.For(
+                0,
+                candidates.Count,
+                new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = skip.Token },
+                i =>
+                {
+                    results[i] = SyncPlan.Prove(collection, folder, ledger, candidates[i], (name, ct) => DownloadEngine.OpenRemote(collection, name, ct), n => Interlocked.Add(ref read, n), skip.Token);
+                    Interlocked.Increment(ref done);
+                }));
+
+            bool skipped = false;
+
+            try
+            {
+                while (await Task.WhenAny(work, Task.Delay(250)) != work)
+                {
+                    int d = Volatile.Read(ref done);
+                    long r = Interlocked.Read(ref read);
+                    this.StageProgressBar.Value = candidates.Count > 0 ? d * 1000.0 / candidates.Count : 0;
+                    stage.Detail = $"{d} / {candidates.Count} zips · {Format.Bytes(r)} read · {this.stageClock.Elapsed.TotalSeconds:0} s";
+                    this.StageDetailTextBlock.Text = "Comparing archive.org's zip index with your copies (a few KB each from archive.org; your files are only read).";
+                    this.Report($"Sync {this.collection}: looking inside changed zips {d} / {candidates.Count}", (double)d / candidates.Count);
+                }
+
+                await work;
+            }
+            catch (OperationCanceledException) when (!this.Token.IsCancellationRequested)
+            {
+                skipped = true;
+            }
+            finally
+            {
+                this.skipStage = null;
+                this.SkipButton.Visibility = Visibility.Collapsed;
+                await Task.Run(ledger.Save);
+            }
+
+            this.Token.ThrowIfCancellationRequested();
+
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                candidates[i].Proof = results[i];
+            }
+
+            var judged = await Task.Run(() => SyncPlan.Classify(this.folder, ledger, all, this.Token));
+            SyncPlan.ApplyClassification(all, judged);
+            var proven = results.Where(r => r != null).ToList();
+            int same = proven.Count(r => r!.Verdict == ProofVerdict.Same);
+            long kept = candidates.Where((r, i) => results[i]?.Verdict == ProofVerdict.Same).Sum(r => r.Entry.B!.Size);
+            string counts = $"≡ {same} same files inside (kept, {Format.Bytes(kept)} not downloaded) · ≠ {proven.Count(r => r!.Verdict == ProofVerdict.Changed)} changed · ? {proven.Count(r => r!.Verdict == ProofVerdict.NotProven)} couldn't prove";
+            stage.Done(skipped ? $"skipped after {done} / {candidates.Count}: {counts}" : counts);
+        }
+
+        private void SkipButton_Click(object sender, RoutedEventArgs e)
+        {
+            this.skipStage?.Cancel();
+        }
+
         private void ShowReview(SnapshotInfo? previous)
         {
             int real = this.rows.Count(r => r.Kind != ChangeKind.Touched);
@@ -216,6 +305,17 @@ namespace ArchiveOrgCollectionSync
             var b = this.baseline!;
             this.BaselineTextBlock.Text = $"Files archive.org lists, on disk (stat only): ✔ {b.Trusted} verified   ? {b.NeedHash} unknown{(b.NeedHash > 0 ? $" ({Format.Bytes(b.NeedHashBytes)})" : string.Empty)}   ✖ {b.Different} different size   — {b.Missing} not on disk."
                 + (b.Adopted > 0 ? $"  {b.Adopted} verification(s) were taken over from earlier sessions, so nothing had to be re-hashed." : string.Empty);
+            var repacks = this.rows.Where(r => r.Repack).ToList();
+            var proofs = this.rows.Where(r => r.Proof != null && !r.Repack).ToList();
+
+            if (repacks.Count > 0 || proofs.Count > 0)
+            {
+                this.BaselineTextBlock.Text += $"\nInside changed zips: ≡ {repacks.Count} hold the same files as yours (archive.org only re-zipped them; kept, {Format.Bytes(repacks.Sum(r => r.Entry.B?.Size ?? 0))} not downloaded)"
+                    + $"   ≠ {proofs.Count(r => r.Proof!.Verdict == ProofVerdict.Changed)} really changed   ? {proofs.Count(r => r.Proof!.Verdict == ProofVerdict.NotProven)} couldn't be proven (treated as changed).";
+            }
+
+            this.ShowRepacks.Content = $"≡ re-zipped only {repacks.Count}";
+            this.ShowRepacks.Visibility = this.TickRepacksButton.Visibility = repacks.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
 
             this.ShowAdded.Content = $"+ added {this.Count(ChangeKind.Added)}";
             this.ShowRemoved.Content = $"− removed {this.Count(ChangeKind.Removed)}";
@@ -272,6 +372,7 @@ namespace ArchiveOrgCollectionSync
             string search = this.SearchTextBox.Text.Trim();
 
             return kind
+                && (!row.Repack || this.ShowRepacks.IsChecked == true)
                 && (this.folderFilter == null || row.Folder.Equals(this.folderFilter, StringComparison.OrdinalIgnoreCase))
                 && (search.Length == 0
                     || row.Name.Contains(search, StringComparison.OrdinalIgnoreCase)
@@ -397,11 +498,12 @@ namespace ArchiveOrgCollectionSync
                 var wasActionable = all.Where(r => r.IsActionable).ToHashSet();
                 var judged = await Task.Run(() => SyncPlan.Classify(this.folder, this.ledger, all, this.Token));
                 SyncPlan.ApplyClassification(all, judged);
+                await this.ProveAsync(all);
                 this.baseline = await Task.Run(() => SyncPlan.Baseline(
                     this.folder, this.ledger, this.sessions, this.live.Where(f => SnapshotDiff.IsTracked(f, this.collection, this.options.OriginalsOnly)).ToArray(), null, this.Token));
 
                 // Rows the hash made actionable get the usual default; the user's own ticks stay as they were.
-                foreach (var row in all.Where(r => r.IsActionable && !wasActionable.Contains(r) && (r.Wanted || r.Local != LocalState.Missing)))
+                foreach (var row in all.Where(r => r.IsActionable && !r.Repack && !wasActionable.Contains(r) && (r.Wanted || r.Local != LocalState.Missing)))
                 {
                     row.IsChecked = true;
                 }
@@ -427,6 +529,17 @@ namespace ArchiveOrgCollectionSync
             foreach (SyncRow row in this.rowsView)
             {
                 row.IsChecked = row.IsActionable;
+            }
+        }
+
+        private void TickRepacksButton_Click(object sender, RoutedEventArgs e)
+        {
+            foreach (SyncRow row in this.rowsView)
+            {
+                if (row.Repack)
+                {
+                    row.IsChecked = true;
+                }
             }
         }
 

@@ -66,6 +66,9 @@ namespace ArchiveOrgCollectionSync
         public List<string> NeedHashNames { get; } = new();
     }
 
+    /// <summary>What <see cref="SyncPlan.Classify"/> found for one row (computed off the UI thread).</summary>
+    public readonly record struct Classification(LocalState State, bool Hashed, bool TargetExists, bool Repack, string? RepackNote);
+
     /// <summary>A planned disk move, also written to _removed\&lt;stamp&gt;\undo.json.</summary>
     public sealed class MoveRecord
     {
@@ -81,6 +84,8 @@ namespace ArchiveOrgCollectionSync
         private LocalState local;
         private bool localHashed;
         private bool targetExists;
+        private bool repack;
+        private ProofResult? proof;
 
         /// <param name="wanted">Whether the file was ticked in the last session (new files: whether everything was).</param>
         public SyncRow(DiffEntry entry, bool wanted)
@@ -159,19 +164,63 @@ namespace ArchiveOrgCollectionSync
             }
         }
 
+        /// <summary>
+        /// Gets or sets a value indicating whether your copy counts as B only because it was proven to hold the same files
+        /// (archive.org re-zipped it). Such rows can still be ticked to fetch archive.org's exact bytes.
+        /// </summary>
+        public bool Repack
+        {
+            get => this.repack;
+            set
+            {
+                this.repack = value;
+                this.Refresh();
+            }
+        }
+
+        /// <summary>Gets or sets what the repack proof found for this row (null = not checked).</summary>
+        public ProofResult? Proof
+        {
+            get => this.proof;
+            set
+            {
+                this.proof = value;
+                this.OnPropertyChanged(nameof(this.ProofText));
+                this.OnPropertyChanged(nameof(this.ProofNote));
+            }
+        }
+
+        /// <summary>Gets the Inside column: ≡ same files (proven), ≠ contents changed, ? couldn't prove.</summary>
+        public string ProofText => this.repack ? "≡" : this.proof?.Verdict switch
+        {
+            ProofVerdict.Same => "≡",
+            ProofVerdict.Changed => "≠",
+            ProofVerdict.NotProven => "?",
+            _ => string.Empty
+        };
+
+        public string? ProofNote => this.proof?.Note ?? (this.repack ? this.RepackNote : null);
+
+        /// <summary>Gets or sets the stored proof note for rows proven in an earlier Sync.</summary>
+        public string? RepackNote { get; set; }
+
         public string LocalText => this.local switch
         {
             LocalState.Missing => "—",
             LocalState.MatchesA => this.localHashed ? "= A ✔" : "= A (size)",
+            LocalState.MatchesB when this.repack => "≡ B (repack)",
             LocalState.MatchesB => this.localHashed ? "= B ✔" : "= B (size)",
             LocalState.Differs => "≠ A,B",
             _ => "? unknown"
         };
 
-        public SyncAction Action => SyncRow.Plan(this.Entry.Kind, this.local, this.targetExists, this.Wanted);
+        /// <summary>Gets what ticking the row does. A proven re-zip can still be replaced with archive.org's exact bytes.</summary>
+        public SyncAction Action => this.repack && this.local == LocalState.MatchesB && this.Kind != ChangeKind.Removed
+            ? SyncAction.Replace
+            : SyncRow.Plan(this.Entry.Kind, this.local, this.targetExists, this.Wanted);
 
         public string ActionText => !this.IsActionable ? this.NoActionText
-            : !this.isChecked ? "leave as is"
+            : !this.isChecked ? (this.repack ? "keep yours: same files inside (proven)" : "leave as is")
             : this.Action switch
             {
                 SyncAction.Download => $"download {Format.Bytes(this.Entry.B!.Size)}",
@@ -245,6 +294,8 @@ namespace ArchiveOrgCollectionSync
 
             this.OnPropertyChanged(nameof(this.Local));
             this.OnPropertyChanged(nameof(this.LocalText));
+            this.OnPropertyChanged(nameof(this.ProofText));
+            this.OnPropertyChanged(nameof(this.ProofNote));
             this.OnPropertyChanged(nameof(this.Action));
             this.OnPropertyChanged(nameof(this.ActionText));
             this.OnPropertyChanged(nameof(this.IsActionable));
@@ -387,30 +438,130 @@ namespace ArchiveOrgCollectionSync
         /// Works out what's on disk for every row from a stat and the ledger. Safe on any thread: it only reads, and
         /// <see cref="ApplyClassification"/> sets the (bound) rows afterwards on the UI thread.
         /// </summary>
-        public static List<(LocalState State, bool Hashed, bool TargetExists)> Classify(string folder, VerifiedLedger ledger, IReadOnlyList<SyncRow> rows, CancellationToken ct)
+        public static List<Classification> Classify(string folder, VerifiedLedger ledger, IReadOnlyList<SyncRow> rows, CancellationToken ct)
         {
-            var result = new List<(LocalState, bool, bool)>(rows.Count);
+            var result = new List<Classification>(rows.Count);
 
             foreach (var row in rows)
             {
                 ct.ThrowIfCancellationRequested();
-                var (state, hashed) = SyncPlan.Judge(folder, ledger, row.Entry.OldName ?? row.Entry.Name, row.Entry.A, row.Entry.B);
+                string name = row.Entry.OldName ?? row.Entry.Name;
+                var (state, hashed) = SyncPlan.Judge(folder, ledger, name, row.Entry.A, row.Entry.B);
                 bool target = row.Kind is ChangeKind.Renamed or ChangeKind.Moved
                     && System.IO.File.Exists(SyncPlan.LocalPath(folder, row.Entry.Name));
-                result.Add((state, hashed, target));
+                var entry = state == LocalState.MatchesB && row.Entry.B is { } b && ledger.Files.TryGetValue(name, out var e) && e.IsRepackFor(b.Md5) && !e.Md5.Equals(b.Md5, StringComparison.OrdinalIgnoreCase)
+                    ? e
+                    : null;
+                result.Add(new Classification(state, hashed, target, entry != null, entry?.ProofNote));
             }
 
             return result;
         }
 
-        public static void ApplyClassification(IReadOnlyList<SyncRow> rows, List<(LocalState State, bool Hashed, bool TargetExists)> results)
+        public static void ApplyClassification(IReadOnlyList<SyncRow> rows, List<Classification> results)
         {
             for (int i = 0; i < rows.Count; i++)
             {
                 rows[i].LocalHashed = results[i].Hashed;
                 rows[i].TargetExists = results[i].TargetExists;
+                rows[i].RepackNote = results[i].RepackNote;
+                rows[i].Repack = results[i].Repack;
                 rows[i].Local = results[i].State;
             }
+        }
+
+        /// <summary>
+        /// Gets the rows worth a repack proof: a changed zip you have on disk in some other version. With
+        /// <paramref name="keepRepacks"/> off (strict), none.
+        /// </summary>
+        public static List<SyncRow> ProofCandidates(IEnumerable<SyncRow> rows, bool keepRepacks)
+        {
+            return keepRepacks
+                ? rows.Where(r => r.Kind == ChangeKind.Changed && !r.Repack && r.Entry.B is { } b && b.Md5.Length > 0
+                    && b.Name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
+                    && r.Local is LocalState.MatchesA or LocalState.Differs or LocalState.Unknown).ToList()
+                : new List<SyncRow>();
+        }
+
+        /// <summary>
+        /// Proves one row against archive.org's zip index and, when the files inside are the same, records your copy as
+        /// equivalent to archive.org's new version in the ledger. Reads your file; never writes it.
+        /// </summary>
+        public static ProofResult Prove(
+            string collection,
+            string folder,
+            VerifiedLedger ledger,
+            SyncRow row,
+            Func<string, CancellationToken, Stream> openRemote,
+            Action<long>? bytesRead,
+            CancellationToken ct)
+        {
+            var b = row.Entry.B!;
+            string name = row.Entry.OldName ?? row.Entry.Name;
+            string path = SyncPlan.LocalPath(folder, name);
+            var before = new FileInfo(path);
+            ProofResult result;
+
+            try
+            {
+                List<ZipEntryInfo> remote;
+
+                using (var stream = openRemote(b.Name, ct))
+                {
+                    remote = ZipIndex.ReadCentral(stream);
+                }
+
+                using var local = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20);
+                result = RepackProof.Prove(local, remote, bytesRead, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or System.Net.Http.HttpRequestException or NotSupportedException)
+            {
+                return new ProofResult(ProofVerdict.NotProven, "couldn't prove: " + ex.Message);
+            }
+
+            if (result.Verdict != ProofVerdict.Same)
+            {
+                return result;
+            }
+
+            var after = new FileInfo(path);
+
+            if (!after.Exists || after.Length != before.Length || after.LastWriteTimeUtc != before.LastWriteTimeUtc)
+            {
+                return new ProofResult(ProofVerdict.NotProven, "couldn't prove: your file changed while it was being read");
+            }
+
+            // Your copy's own MD5: from the ledger when it vouches for this exact file, else hashed now.
+            var known = ledger.Current(name, after);
+            string md5 = known is { Md5Verified: true, Md5.Length: > 0 }
+                ? known.Md5
+                : DownloadEngine.HashMd5Async(path, null, ct).GetAwaiter().GetResult();
+
+            if (!new FileInfo(path).LastWriteTimeUtc.Equals(after.LastWriteTimeUtc))
+            {
+                return new ProofResult(ProofVerdict.NotProven, "couldn't prove: your file changed while it was being read");
+            }
+
+            ledger.Put(name, new LedgerEntry
+            {
+                Size = after.Length,
+                Md5 = md5,
+                Sha1 = known?.Sha1 ?? string.Empty,
+                Crc32 = known?.Crc32 ?? string.Empty,
+                LocalLength = after.Length,
+                LocalWriteUtc = after.LastWriteTimeUtc,
+                VerifiedUtc = DateTime.UtcNow,
+                Md5Verified = true,
+                Source = "repack proof",
+                EquivalentMd5 = b.Md5,
+                EquivalentSize = b.Size,
+                ProofNote = result.Note
+            });
+            return result;
         }
 
         public static (LocalState State, bool Hashed) Judge(string folder, VerifiedLedger ledger, string name, File? a, File? b)
@@ -424,7 +575,7 @@ namespace ArchiveOrgCollectionSync
 
             if (ledger.Current(name, info) is { } entry)
             {
-                bool Same(File? f) => f != null && entry.Md5.Length > 0 && entry.Md5.Equals(f.Md5, StringComparison.OrdinalIgnoreCase) && (!f.SizeSpecified || f.Size == entry.Size);
+                bool Same(File? f) => f != null && entry.Covers(f.Md5, f.Size, f.SizeSpecified);
 
                 return (Same(b) ? LocalState.MatchesB : Same(a) ? LocalState.MatchesA : LocalState.Differs, entry.Md5Verified);
             }
