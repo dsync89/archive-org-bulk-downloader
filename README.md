@@ -44,6 +44,35 @@ miss the real updates.
 | Downloaded | 30.6 GB | about 2.3 GB |
 | Your old copies | overwritten | the 10 real old versions are kept in `_removed\<date>\`, with a list of the ROMs that changed |
 
+### Why do files get re-zipped at all? (the TorrentZip date, 1996-12-24 23:32)
+
+A zip stores more than its files: a date per entry, the entry order, the compression settings, and header fields such
+as "made by" version and file attributes. Zip the same ROMs twice on two PCs and you get two different MD5s.
+
+The ROM scene fixed this with **[TorrentZip](https://www.romvault.com/trrntzip_explained.pdf)**:
+- files are always in sorted order;
+- compression settings are fixed;
+- every entry carries the same date, **24 Dec 1996 23:32**.
+
+According to the TorrentZip standard, that date is the date of the first ever MAME release, and the fixed values are
+what make identical files produce byte-identical zips on any machine. That's what lets people share ROM sets over
+BitTorrent.
+
+But zips still get rebuilt:
+- **New tool version.** The uploader runs a newer TorrentZip / RomVault build that writes slightly different headers.
+- **First TorrentZip.** An older non-TorrentZip zip is converted, so every entry date is reset to 1996-12-24 23:32.
+- **New DAT.** The set is rebuilt against a newer MAME DAT, which drops folder entries and reorders files.
+
+Each of these gives the file a new MD5 and size on archive.org, with exactly the same ROMs inside. On tp-roms_0 the
+dates were already 1996-12-24 23:32. What changed was the zip tool's header fields and some empty folder entries, so
+1941 Counter Attack differed by 265 bytes out of 7.6 MB.
+
+**Downloaders that compare whole-file checksums (MD5, SHA-1 or CRC of the zip) can't tell this apart from a real
+update**, so they download everything again. This app looks inside instead:
+- It compares the CRC32 of every file and inner zip.
+- It rebuilds each inner zip the TorrentZip way from your own ROMs: TorrentZip date, sorted order, fixed headers.
+- When the rebuild matches archive.org's byte for byte, only the packaging changed, and your copy is kept.
+
 How it does that:
 - **It remembers every link.** Each collection + folder pair keeps snapshots of archive.org's file list, so the app
   knows what you had and when.
