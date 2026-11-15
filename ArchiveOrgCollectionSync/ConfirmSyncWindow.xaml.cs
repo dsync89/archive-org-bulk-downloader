@@ -38,7 +38,17 @@ namespace ArchiveOrgCollectionSync
                 Warn(rows.Where(r => !r.IsChecked && r.Kind == ChangeKind.Removed && r.Local != LocalState.Missing), n => $"\"Delete files not in the collection\" is on, so the run deletes these unticked removed files anyway ({n})");
             }
 
-            int real = rows.Count(r => r.Kind != ChangeKind.Touched);
+            var kept = rows.Where(r => r.Repack && !r.IsChecked).ToList();
+
+            if (kept.Count > 0)
+            {
+                warnings.Add($"✔ {Format.Plural(kept.Count, "re-zipped file")} kept as they are: every file inside is provably the same as archive.org's new version ({Format.Bytes(kept.Sum(r => r.Entry.B?.Size ?? 0))} not downloaded, nothing moved).");
+            }
+
+            Warn(ticked.Where(r => r.Repack), n => $"Re-zipped only (same files inside) but ticked: your copies go to _removed\\ and archive.org's exact bytes are downloaded ({n})");
+
+            // Re-zips aren't real changes, so they don't count towards "is this the same item?".
+            int real = rows.Count(r => r.Kind != ChangeKind.Touched && !r.Repack);
 
             if (olderCount >= 4 && real > olderCount / 2)
             {

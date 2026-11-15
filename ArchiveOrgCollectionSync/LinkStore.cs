@@ -136,10 +136,16 @@ namespace ArchiveOrgCollectionSync
 
             string listPath = Path.Combine(folder, $"{collection}_files.xml");
             File[]? seed = null;
+            var newest = sessions.Where(s => s.Files.Count > 0).OrderByDescending(s => s.Started).FirstOrDefault();
 
             try
             {
-                if (System.IO.File.Exists(listPath))
+                // The folder's list is only a good baseline when no later run fetched a newer list: a session started
+                // after it was written (beyond clock skew) knows better what you downloaded.
+                bool sessionIsNewer = newest != null && System.IO.File.Exists(listPath)
+                    && newest.Started > System.IO.File.GetLastWriteTime(listPath) + TimeSpan.FromMinutes(10);
+
+                if (System.IO.File.Exists(listPath) && !sessionIsNewer)
                 {
                     using var stream = System.IO.File.OpenRead(listPath);
                     seed = ((FileCollection?)LinkStore.ListSerializer.Deserialize(stream))?.Files;
@@ -155,7 +161,7 @@ namespace ArchiveOrgCollectionSync
                 seed = null;
             }
 
-            if (seed == null && sessions.FirstOrDefault(s => s.Files.Count > 0) is { } newest)
+            if (seed == null && newest != null)
             {
                 LinkStore.AddSnapshot(link, newest.Files.Select(f => f.ToFile()).ToArray(), "session " + newest.Id, newest.Ended ?? newest.Started, onlyIfChanged: false);
             }

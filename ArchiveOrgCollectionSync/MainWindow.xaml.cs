@@ -136,6 +136,7 @@
             this.VerifyComboBox.SelectedIndex = options.Verify == VerifyMode.SizeOnly ? 1 : 0;
             this.OriginalsCheckBox.IsChecked = options.OriginalsOnly;
             this.DeleteFilesCheckBox.IsChecked = options.DeleteExtraFiles;
+            this.KeepRepacksCheckBox.IsChecked = options.KeepRepacks;
         }
 
         private SyncOptions ReadOptions()
@@ -146,7 +147,8 @@
                 ConnectionsPerFile = this.ConnectionsNumericUpDown.Value,
                 Verify = this.VerifyComboBox.SelectedIndex == 1 ? VerifyMode.SizeOnly : VerifyMode.Md5,
                 OriginalsOnly = this.OriginalsCheckBox.IsChecked == true,
-                DeleteExtraFiles = this.DeleteFilesCheckBox.IsChecked == true
+                DeleteExtraFiles = this.DeleteFilesCheckBox.IsChecked == true,
+                KeepRepacks = this.KeepRepacksCheckBox.IsChecked == true
             };
         }
 
@@ -1350,7 +1352,8 @@
             {
                 if (byName.TryGetValue(row.Name, out var item))
                 {
-                    item.IsChecked = row.IsActionable ? row.IsChecked : row.Wanted;
+                    // A kept re-zip stays wanted: Start skips it as verified (the ledger knows it holds the same files).
+                    item.IsChecked = row.Repack && !row.IsChecked ? row.Wanted : row.IsActionable ? row.IsChecked : row.Wanted;
 
                     if (row.Kind != ChangeKind.Touched)
                     {
@@ -1375,6 +1378,16 @@
                     : new LogEntry(LogLevel.Info, $"Moved to {to} (removed or replaced on archive.org).", from));
             }
 
+            foreach (var row in outcome.Rows.Where(r => r.Repack && !r.IsChecked))
+            {
+                preamble.Add(new LogEntry(LogLevel.Success, $"Kept your copy: archive.org re-zipped it, but it holds {row.ProofNote ?? "the same files inside"}.", row.Name));
+            }
+
+            foreach (var row in outcome.Rows.Where(r => r.IsChecked && r.Proof is { Verdict: ProofVerdict.Changed or ProofVerdict.NotProven }))
+            {
+                preamble.Add(new LogEntry(LogLevel.Info, $"Looked inside before replacing: {row.Proof!.Note}.", row.Name));
+            }
+
             preamble.AddRange(outcome.Errors.Select(error => new LogEntry(LogLevel.Error, "Sync could not rename or move a file. - " + error, null)));
 
             bool download = outcome.Rows.Any(r => r.IsChecked && r.Action is SyncAction.Download or SyncAction.Replace or SyncAction.Check);
@@ -1383,6 +1396,7 @@
             {
                 this.Tabs.SelectedIndex = 0;
                 await this.RunAsync(false, i => i.IsChecked && i.CurrentStatus == FileStatus.Queued, preamble: preamble);
+                await this.DescribeReplacedAsync(outcome, current);
                 return;
             }
 
@@ -1404,6 +1418,65 @@
             this.Tick();
             this.RefreshSessions();
             this.UpdateButtons();
+        }
+
+        /// <summary>
+        /// After a Sync's downloads: for every zip that replaced an old copy (now in _removed\), lists what changed
+        /// inside, file by file, in the run's log and in _removed\&lt;date&gt;\changes.txt. Only reads both files.
+        /// </summary>
+        private async Task DescribeReplacedAsync(SyncOutcome outcome, SessionRecord current)
+        {
+            var byName = this.items.GroupBy(i => i.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+            var pairs = outcome.Moves
+                .Where(m => m.To.StartsWith(outcome.RemovedFolder, StringComparison.OrdinalIgnoreCase) && m.To.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                .Select(m => (Move: m, Name: Path.GetRelativePath(outcome.Link.Folder, m.From).Replace('\\', '/')))
+                .Where(p => byName.TryGetValue(p.Name, out var item) && item.CurrentStatus == FileStatus.Done && System.IO.File.Exists(p.Move.From) && System.IO.File.Exists(p.Move.To))
+                .ToList();
+
+            if (pairs.Count == 0)
+            {
+                return;
+            }
+
+            var lines = new List<string>();
+            int done = 0;
+            this.log.Open(SessionStore.LogPath(current));
+
+            foreach (var (move, name) in pairs)
+            {
+                this.SetStatus($"Comparing replaced zips with their old copies {++done} / {pairs.Count}: {name}");
+                string text;
+
+                try
+                {
+                    text = await Task.Run(() =>
+                    {
+                        using var before = new FileStream(move.To, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20);
+                        using var after = new FileStream(move.From, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20);
+                        return RepackProof.Describe(RepackProof.ListContents(before, CancellationToken.None), RepackProof.ListContents(after, CancellationToken.None));
+                    });
+                }
+                catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or NotSupportedException)
+                {
+                    text = "couldn't compare: " + ex.Message;
+                }
+
+                lines.Add($"{name}: {text}");
+                this.log.Write(LogLevel.Info, $"Inside, compared with the old copy in _removed\\: {text}.", name);
+            }
+
+            this.log.Close();
+
+            try
+            {
+                System.IO.File.WriteAllLines(Path.Combine(outcome.RemovedFolder, "changes.txt"), lines);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+            }
+
+            this.Tick();
+            this.SetStatus($"Sync: compared {Format.Plural(pairs.Count, "replaced zip")} with their old copies; see the log or {Path.Combine(outcome.RemovedFolder, "changes.txt")}.", LogLevel.Info);
         }
 
         // ----- Runs (session history, on the Links tab) -----

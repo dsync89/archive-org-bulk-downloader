@@ -41,6 +41,8 @@
                 <Button x:Name="CompareAnywayButton" Style="{StaticResource BarButton}" Visibility="Collapsed" Click="CompareAnywayButton_Click"
                     ToolTip="Read the file list and compare it with your last snapshot even though archive.org reports no change.">Compare anyway</Button>
                 <Button x:Name="ConfirmButton" Style="{StaticResource BarButton}" Visibility="Collapsed" Click="ConfirmButton_Click" IsDefault="True">Review &amp; confirm…</Button>
+                <Button x:Name="SkipButton" Style="{StaticResource BarButton}" Visibility="Collapsed" Click="SkipButton_Click"
+                    ToolTip="Stop looking inside zips; rows not checked yet are treated as normal changes.">Skip this step</Button>
                 <Button x:Name="BackgroundButton" Style="{StaticResource BarButton}" Click="BackgroundButton_Click"
                     ToolTip="Hide this window and keep going; the status strip in the main window shows progress and reopens it.">Run in background</Button>
                 <Button x:Name="CancelButton" Style="{StaticResource BarButton}" Click="CancelButton_Click" IsCancel="True">Cancel</Button>
@@ -92,6 +94,8 @@
                         <CheckBox x:Name="ShowChanged" Style="{StaticResource KindToggle}" IsChecked="True" Click="Filter_Changed" />
                         <CheckBox x:Name="ShowTouched" Style="{StaticResource KindToggle}" IsChecked="False" Click="Filter_Changed"
                             ToolTip="Same content, only archive.org's upload time moved. Nothing to do; shown for the record." />
+                        <CheckBox x:Name="ShowRepacks" Style="{StaticResource KindToggle}" IsChecked="True" Click="Filter_Changed" Visibility="Collapsed"
+                            ToolTip="Changed on archive.org, but every file inside is provably the same as yours: archive.org (or the uploader) only re-zipped it. Kept unless you tick it." />
                     </WrapPanel>
                 </DockPanel>
                 <DataGrid x:Name="FoldersDataGrid" DockPanel.Dock="Top" Height="118" Margin="0,0,0,8" AutoGenerateColumns="False" IsReadOnly="True"
@@ -111,6 +115,8 @@
                     <TextBlock VerticalAlignment="Center" Margin="0,0,6,0">Tick:</TextBlock>
                     <Button Padding="8,1" Margin="0,0,4,0" Click="TickAllButton_Click" ToolTip="Tick every visible row that would change something.">All</Button>
                     <Button Padding="8,1" Margin="0,0,4,0" Click="TickNoneButton_Click" ToolTip="Untick every visible row: those files are left exactly as they are.">None</Button>
+                    <Button x:Name="TickRepacksButton" Padding="8,1" Margin="0,0,4,0" Click="TickRepacksButton_Click" Visibility="Collapsed"
+                        ToolTip="Replace re-zipped files anyway, to have archive.org's exact bytes (same files inside, so this only costs bandwidth).">Tick ≡ anyway</Button>
                     <TextBlock VerticalAlignment="Center" Margin="8,0,0,0" Foreground="Gray">Unticked rows are left as they are on disk (and unticked in the file list).</TextBlock>
                 </StackPanel>
                 <DataGrid x:Name="RowsDataGrid" AutoGenerateColumns="False" IsReadOnly="True" HeadersVisibility="Column" GridLinesVisibility="Horizontal"
@@ -142,7 +148,14 @@
                         <DataGridTextColumn Header="Name" Binding="{Binding NameText}" Width="*" SortMemberPath="Name" />
                         <DataGridTextColumn Header="A (snapshot)" Binding="{Binding AText}" Width="170" />
                         <DataGridTextColumn Header="B (archive.org now)" Binding="{Binding BText}" Width="170" />
-                        <DataGridTextColumn Header="Local" Binding="{Binding LocalText}" Width="80" SortMemberPath="Local" />
+                        <DataGridTextColumn Header="Local" Binding="{Binding LocalText}" Width="90" SortMemberPath="Local" />
+                        <DataGridTemplateColumn Header="Inside" Width="52" SortMemberPath="ProofText">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding ProofText}" ToolTip="{Binding ProofNote}" HorizontalAlignment="Center" FontWeight="SemiBold" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
                         <DataGridTextColumn Header="Action" Binding="{Binding ActionText}" Width="230" />
                     </DataGrid.Columns>
                 </DataGrid>
